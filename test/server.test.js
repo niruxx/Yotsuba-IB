@@ -61,7 +61,7 @@ test('admin login, CSRF and board creation', async () => {
   const created = await staffPost('/admin/boards', { slug: 'g', title: 'Technology', bio: 'tech talk', visible: 'on' });
   assert.equal(created.status, 302);
   const home = await (await fetch(base)).text();
-  assert.match(home, /\/g\/ - Technology/);
+  assert.match(home, /<a href="\/g\/" title="tech talk">Technology<\/a>/);
 });
 
 test('homepage: presets, section order and renamed labels', async () => {
@@ -183,7 +183,9 @@ test('NSFW ratings, customized warnings and per-board confirmation', async () =>
   const created = await staffPost('/admin/boards', { slug: 'adult', title: 'Adult', visible: 'on', nsfw: '1' });
   assert.equal(created.status, 302);
   assert.equal(db.prepare('SELECT nsfw FROM boards WHERE slug = ?').get('adult').nsfw, 1);
-  await staffPost('/admin/boards', { slug: 'adult2', title: 'Other', visible: 'on', nsfw: 'on' });
+  const other = await staffPost('/admin/boards', { slug: 'adult2', title: 'Other', visible: 'on', nsfw: 'on' });
+  assert.equal(other.status, 302);
+  assert.equal(db.prepare('SELECT nsfw FROM boards WHERE slug = ?').get('adult2').nsfw, 1);
   const saved = await staffPost('/admin/settings', {
     nsfw_warning_title: 'Sensitive content', nsfw_warning_text: 'Think before entering <script>alert(1)</script>',
   });

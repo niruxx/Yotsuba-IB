@@ -149,6 +149,7 @@ export function registerAdmin(app, ctx) {
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(slug, title, bio, hidden, optSeconds(req.body.thread_cooldown), optSeconds(req.body.reply_cooldown),
         x.category, x.position, x.rules, x.poster_ids, x.country_flags, Date.now());
+    saveExtras(slug, req.body, x);
     audit(req, 'create_board', `/${slug}/ "${title}"${hidden ? ' (hidden)' : ''}`);
     back(res, '/admin/boards', `Created /${slug}/`);
   });
