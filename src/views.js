@@ -25,20 +25,7 @@ ${THEME_BOOT}
 </nav>
 ${announcement.trim() ? `<div class="announcement" data-hash="${esc(simpleHash(announcement))}">${esc(announcement)}
   <a href="#" class="dismiss-announcement" title="hide">×</a></div>` : ''}
-<div id="settings-panel" class="settings-panel" hidden>
-  <h3>Settings <small>(saved in this browser)</small></h3>
-  <label>Theme <select data-pref="theme">
-    <option value="yotsuba">Yotsuba</option><option value="yotsuba-b">Yotsuba B</option><option value="tomorrow">Tomorrow (dark)</option>
-  </select></label>
-  <label><input type="checkbox" data-pref="hoverImages"> Show full image when hovering a thumbnail</label>
-  <label><input type="checkbox" data-pref="unmute"> Play videos with sound</label>
-  <label>Video volume <input type="range" min="0" max="1" step="0.05" data-pref="volume"></label>
-  <label><input type="checkbox" data-pref="autoUpdate" checked> Auto-update threads</label>
-  <label>Hide posts matching (one rule per line)
-    <textarea data-pref="filters" rows="4" cols="34" placeholder="text to hide&#10;/regex/i&#10;name:SomeName&#10;trip:!abc123&#10;id:Ab12Cd34"></textarea></label>
-  <button type="button" id="clear-hidden">Unhide all manually hidden posts</button>
-  <button type="button" id="close-settings">Close</button>
-</div>
+<div id="settings-panel" class="settings-panel" hidden></div>
 <div id="watcher" hidden><div class="w-head">Watched threads <a href="#" id="watcher-toggle">[–]</a></div><ul id="watcher-list"></ul></div>
 ${body}
 <footer>Powered by Yotsuba-IB${hasFaq ? ' · <a href="/faq">FAQ</a>' : ''}</footer>
@@ -99,7 +86,7 @@ function fileBlock(p) {
   const info = `<div class="fileinfo">File: <a href="${src}" target="_blank">${p.spoiler ? 'Spoiler Image' : esc(p.file_orig)}</a> (${fmtSize(p.file_size)}${dims})</div>`;
   const isVideo = p.file_mime.startsWith('video/');
   const thumb = p.spoiler
-    ? '<span class="media spoiler-img">Spoiler</span>'
+    ? `<span class="media spoiler-img"${p.thumb ? ` data-thumb="${thumbUrl(p.id)}"` : ''}>Spoiler</span>`
     : `<img class="media" src="${p.thumb ? thumbUrl(p.id) : src}" loading="lazy" alt="">${isVideo ? '<span class="playicon">▶</span>' : ''}`;
   return `${info}<a class="thumb${isVideo ? ' video' : ''}" href="${src}" data-full="${src}" data-type="${isVideo ? 'video' : 'image'}">${thumb}</a>`;
 }
@@ -115,12 +102,12 @@ export function renderPost(p, board, { isOp, admin, backlinks }) {
     <span class="name${p.capcode ? ' capcode' : ''}">${esc(p.name)}${p.tripcode ? ` <span class="trip">${esc(p.tripcode)}</span>` : ''}${p.capcode ? ` <strong>## ${esc(p.capcode)}</strong>` : ''}</span>
     ${p.poster_id ? `<span class="posterid" style="background:${idColor(p.poster_id)}" title="Highlight posts by this ID">ID: ${esc(p.poster_id)}</span>` : ''}
     ${p.country ? `<span class="country" title="${esc(p.country)}">${flagEmoji(p.country)}</span>` : ''}
-    <span class="date">${fmtDate(p.created)}</span>
+    <span class="date" data-time="${p.created}">${fmtDate(p.created)}</span>
     <a href="/${slug}/thread/${p.thread_id ?? p.id}#p${p.id}" class="postno" data-id="${p.id}">No.${p.id}</a>
     ${isOp && p.sticky ? '<span class="flag" title="Sticky">[Sticky]</span>' : ''}
     ${isOp && p.locked && !p.archived ? '<span class="flag" title="Locked">[Locked]</span>' : ''}
     ${isOp && p.archived ? '<span class="flag" title="Archived">[Archived]</span>' : ''}
-    ${isOp ? `<a href="/${slug}/thread/${p.id}">[Reply]</a> <a href="#" class="watch" data-title="${esc((p.subject || p.body).slice(0, 40))}">[Watch]</a>` : ''}
+    ${isOp ? `<a href="/${slug}/thread/${p.id}#reply" class="reply-link">[Reply]</a> <a href="#" class="watch" data-title="${esc((p.subject || p.body).slice(0, 40))}">[Watch]</a>` : ''}
     ${p.delete_hash ? `<details class="report"><summary>[delete]</summary>
       <form method="post" action="/${slug}/delete" class="selfdelete"><input type="hidden" name="id" value="${p.id}">
       <input type="password" name="password" required placeholder="deletion password" class="delpw">
@@ -181,7 +168,7 @@ export function postForm(board, threadId, maxMb, loggedIn = false) {
     ${board.forced_anon ? '' : '<tr><th>Name</th><td><input name="name" placeholder="Anonymous" maxlength="80" title="Name#password for a tripcode"></td></tr>'}
     <tr><th>Options</th><td><input name="options" maxlength="40" placeholder="sage / nonoko"></td></tr>
     ${threadId ? '' : `<tr><th>Subject</th><td><input name="subject" maxlength="100"${board.require_subject ? ' required' : ''}></td></tr>`}
-    <tr><th>Comment</th><td><textarea name="body" rows="5" maxlength="4000"></textarea></td></tr>
+    <tr><th>Comment</th><td><textarea name="body" rows="5" maxlength="4000" placeholder="Comment"></textarea></td></tr>
     ${board.text_only ? '' : `<tr><th>File</th><td><input type="file" name="file" accept="${acceptFor(board)}">
       <label class="inline-check"><input type="checkbox" name="spoiler"> Spoiler</label>
       <small>max ${maxMb} MB · ${typesFor(board).join(' ')}${threadId ? '' : ' · required for new threads'}</small></td></tr>`}
@@ -222,7 +209,7 @@ ${threads.map(({ op, replies, omitted }) => {
     const backlinks = backlinkMap([op, ...replies]);
     return `<div class="thread">
   ${renderPost(op, board, { isOp: true, admin, backlinks })}
-  ${omitted ? `<div class="omitted">${omitted} replies omitted. <a href="/${board.slug}/thread/${op.id}">View thread</a></div>` : ''}
+  ${omitted ? `<div class="omitted">${omitted} replies omitted. <a href="/${board.slug}/thread/${op.id}" class="expand-thread" data-thread="${op.id}">View thread</a></div>` : ''}
   ${replies.map((r) => renderPost(r, board, { isOp: false, admin, backlinks })).join('')}
 </div><hr>`;
   }).join('\n') || '<p class="empty">No threads yet. Start one!</p>'}
@@ -234,7 +221,8 @@ export function threadPage(board, op, replies, { admin, loggedIn, maxMb, banner 
   const backlinks = backlinkMap([op, ...replies]);
   const canReply = !op.archived && (!op.locked || admin || loggedIn);
   return `${boardHeader(board, 'thread', banner)}
-<p><a href="/${board.slug}/">[Return]</a> <a href="/${board.slug}/catalog">[Catalog]</a> <a href="#bottom">[Bottom]</a></p>
+<p><a href="/${board.slug}/">[Return]</a> <a href="/${board.slug}/catalog">[Catalog]</a> <a href="#bottom">[Bottom]</a>
+  ${canReply ? '<a href="#reply" class="reply-link reply-button">[Post a Reply]</a>' : ''}</p>
 ${op.archived ? '<p class="error">This thread is archived. It is read-only and will be deleted later.</p>'
     : canReply ? postForm(board, op.id, maxMb, loggedIn) : '<p class="error">This thread is locked. You cannot reply.</p>'}
 <hr>
@@ -245,7 +233,7 @@ ${op.archived ? '<p class="error">This thread is archived. It is read-only and w
 <div class="threadstats" id="bottom">
   <span id="replycount">${op.reply_count}</span> replies ·
   ${op.archived ? 'archived' : `<a href="#" id="update-now">[Update]</a> <span id="update-status"></span>`}
-  · <a href="#top">[Top]</a>
+  · <a href="#top">[Top]</a>${canReply ? ' · <a href="#reply" class="reply-link reply-button">[Post a Reply]</a>' : ''}
 </div>`;
 }
 

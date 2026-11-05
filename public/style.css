@@ -54,7 +54,7 @@ hr { border: none; border-top: 1px solid var(--border); clear: both; }
 .thumb { position: relative; float: left; margin: 3px 16px 8px 0; }
 .media { max-width: 200px; max-height: 200px; display: block; }
 .post.reply .media { max-width: 125px; max-height: 125px; }
-.thumb.expanded .media { max-width: calc(100vw - 60px); max-height: none; }
+.thumb.expanded .media { max-width: none; max-height: none; }
 .expanded-video { float: left; margin: 3px 16px 8px 0; }
 .expanded-video video { max-width: calc(100vw - 60px); max-height: 90vh; }
 .playicon { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); color: #fff; font-size: 30px; text-shadow: 0 0 6px #000; pointer-events: none; }
@@ -185,3 +185,51 @@ html.birthday .thumb::before { content: ''; position: absolute; z-index: 2; widt
   transform: rotate(-18deg); pointer-events: none; }
 html.birthday .thumb { margin-top: 26px; }
 @media (max-width: 640px) { #watcher { top: auto; bottom: 0; left: 0; max-width: none; right: 0; } }
+
+/* ---------- quick reply box (right side) ---------- */
+#quick-reply { right: 16px; top: 80px; bottom: auto; width: 320px; max-width: calc(100vw - 32px); }
+#quick-reply .qr-form { display: block; margin: 0; padding: 6px; }
+#quick-reply .qr-form table, #quick-reply .qr-form tbody, #quick-reply .qr-form tr, #quick-reply .qr-form td { display: block; width: 100%; }
+#quick-reply .qr-form th { display: none; }
+#quick-reply .qr-form td { padding: 0 0 4px; }
+#quick-reply .qr-form input:not([type]), #quick-reply .qr-form input[type=password], #quick-reply .qr-form textarea { width: 100%; box-sizing: border-box; }
+#quick-reply .qr-form textarea { resize: vertical; min-height: 90px; }
+#quick-reply .qr-form input[type=file] { max-width: 100%; font-size: 12px; }
+#quick-reply .qr-form small { font-size: 11px; }
+#quick-reply .qr-form button { width: 100%; }
+#quick-reply .qr-hidden-row { display: none !important; }
+.reply-button { font-weight: bold; }
+@media (max-width: 640px) { #quick-reply { top: auto; bottom: 0; right: 0; left: 0; width: auto; max-width: none; } }
+
+/* ---------- settings panel (tabbed) and settings-driven classes ---------- */
+.settings-panel { width: min(560px, calc(100vw - 20px)); max-height: calc(100vh - 50px); overflow: auto; padding: 0; }
+.settings-panel .sp-head { display: flex; gap: 8px; align-items: baseline; padding: 6px 10px; background: var(--th); position: sticky; top: 0; }
+.settings-panel .sp-head .sp-close { margin-left: auto; text-decoration: none; font-size: 16px; }
+.settings-panel .tabs { display: flex; flex-wrap: wrap; gap: 2px; padding: 6px 8px 0; border-bottom: 1px solid var(--border); }
+.settings-panel .tab { background: none; border: 1px solid transparent; border-bottom: none; padding: 4px 8px; cursor: pointer; color: var(--link); font: inherit; }
+.settings-panel .tab.active { background: var(--bg); border-color: var(--border); color: var(--fg); font-weight: bold; }
+.settings-panel .tabpage { padding: 8px 12px 12px; }
+.settings-panel .opt { display: block; margin: 7px 0; }
+.settings-panel .opt small { display: block; color: var(--muted); margin-left: 22px; }
+.settings-panel .opt.block small { margin-left: 0; }
+.settings-panel .opt textarea { width: 100%; box-sizing: border-box; font: 12px monospace; margin-top: 3px; }
+.settings-panel .opt input[type=text], .settings-panel .opt input[type=number] { width: 120px; }
+.settings-panel .optbtn { margin: 6px 6px 0 0; }
+
+html.fixed-header .topbar { position: sticky; top: 0; z-index: 45; }
+html.fit-width .thumb.expanded .media { max-width: calc(100vw - 60px); }
+html.fit-height .thumb.expanded .media { max-height: 95vh; }
+html.no-thumbs .thumb, html.no-thumbs .ctile img { display: none !important; }
+html.no-backlinks .backlinks { display: none; }
+html.no-hide-buttons .hide-post { display: none; }
+html.no-you .you { display: none; }
+html.no-you .post.mine { border-left: inherit !important; }
+.post.quotes-you { border-left: 3px solid #e08000 !important; }
+html.no-you-highlight .post.quotes-you { border-left: inherit !important; }
+.post.filter-highlight { box-shadow: inset 4px 0 0 #2a9d3a; }
+.post.user-hidden.no-stub { display: none !important; }
+.inline-quote { display: block; margin: 4px 0 4px 10px; }
+.inline-quote > .post { display: table; margin: 0; border: 1px dashed var(--border); }
+a.quotelink.inlined { font-style: italic; }
+hr.unread-line { border: none; border-top: 2px solid #c00; margin: 6px 0; clear: both; }
+.post.kb-focus { outline: 2px solid var(--qlink); outline-offset: 1px; }
