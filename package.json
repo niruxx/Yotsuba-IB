@@ -16,7 +16,7 @@
   ],
   "scripts": {
     "start": "node bin/cli.js",
-    "test": "node --test test/",
+    "test": "node --test",
     "prepublishOnly": "npm test"
   },
   "engines": {
