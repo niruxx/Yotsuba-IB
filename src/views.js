@@ -319,3 +319,15 @@ export function errorPage(message) {
   return `<header class="hero"><h1>Error</h1></header><p class="error">${esc(message)}</p>
 <p><a href="javascript:history.back()">Go back</a></p>`;
 }
+
+export function nsfwWarningPage(board, settings, destination) {
+  return `<header class="hero"><h1>${esc(settings.nsfw_warning_title)}</h1></header>
+<section class="box" aria-labelledby="nsfw-board-title">
+  <h2 id="nsfw-board-title">/${esc(board.slug)}/ - ${esc(board.title)} <small class="nsfw">NSFW</small></h2>
+  <p style="white-space:pre-wrap">${esc(settings.nsfw_warning_text)}</p>
+  <form method="post" action="/${esc(board.slug)}/nsfw/accept">
+    <input type="hidden" name="destination" value="${esc(destination)}">
+    <button>Continue to board</button> <a href="/">Go back to homepage</a>
+  </form>
+</section>`;
+}

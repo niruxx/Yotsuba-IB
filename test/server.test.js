@@ -177,3 +177,43 @@ test('bans block posting', async () => {
   assert.equal(r.status, 403);
   assert.match(await r.text(), /You are banned/);
 });
+
+
+test('NSFW ratings, customized warnings and per-board confirmation', async () => {
+  const created = await staffPost('/admin/boards', { slug: 'adult', title: 'Adult', visible: 'on', nsfw: '1' });
+  assert.equal(created.status, 302);
+  assert.equal(db.prepare('SELECT nsfw FROM boards WHERE slug = ?').get('adult').nsfw, 1);
+  await staffPost('/admin/boards', { slug: 'adult2', title: 'Other', visible: 'on', nsfw: 'on' });
+  const saved = await staffPost('/admin/settings', {
+    nsfw_warning_title: 'Sensitive content', nsfw_warning_text: 'Think before entering <script>alert(1)</script>',
+  });
+  assert.equal(saved.status, 302);
+  assert.equal(db.prepare("SELECT value FROM settings WHERE key = 'nsfw_warning_title'").get().value, 'Sensitive content');
+  for (const route of ['/adult/', '/adult/catalog', '/adult/archive', '/adult/thread/999']) {
+    const response = await fetch(base + route);
+    const html = await response.text();
+    assert.match(html, /Sensitive content/);
+    assert.match(html, /Think before entering &lt;script&gt;/);
+    assert.match(html, /Continue to board/);
+    assert.doesNotMatch(html, /<script>alert/);
+    assert.equal(response.headers.get('cache-control'), 'private, no-store');
+  }
+  assert.doesNotMatch(await (await fetch(base + '/g/')).text(), /Continue to board/);
+  const accepted = await fetch(base + '/adult/nsfw/accept', {
+    method: 'POST', redirect: 'manual', body: form({ destination: '/adult/catalog?page=1' }),
+  });
+  assert.equal(accepted.status, 303);
+  assert.equal(accepted.headers.get('location'), '/adult/catalog?page=1');
+  const acceptance = accepted.headers.get('set-cookie').split(';')[0];
+  for (const route of ['/adult/', '/adult', '/adult/catalog']) {
+    assert.doesNotMatch(await (await fetch(base + route, { headers: { cookie: acceptance } })).text(), /Continue to board/);
+  }
+  assert.match(await (await fetch(base + '/adult2/', { headers: { cookie: acceptance } })).text(), /Continue to board/);
+  const external = await fetch(base + '/adult/nsfw/accept', {
+    method: 'POST', redirect: 'manual', body: form({ destination: '//example.com/' }),
+  });
+  assert.equal(external.headers.get('location'), '/adult/');
+  await staffPost('/admin/boards/adult', { action: 'save', title: 'Adult', visible: 'on', nsfw: '0' });
+  assert.equal(db.prepare('SELECT nsfw FROM boards WHERE slug = ?').get('adult').nsfw, 0);
+  assert.doesNotMatch(await (await fetch(base + '/adult/')).text(), /Continue to board/);
+});

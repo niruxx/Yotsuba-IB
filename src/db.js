@@ -28,6 +28,8 @@ export const SETTING_DEFAULTS = {
   board_flood_per_min: '30',    // max posts per board per minute across all IPs (0 = off)
   phash_threshold: '8',         // banned-image similarity: max differing bits out of 64 (0 = exact pixels only)
   archive_days: '7',            // pruned/inactive threads stay read-only in the archive this long (0 = delete immediately)
+  nsfw_warning_title: 'NSFW warning',
+  nsfw_warning_text: 'This board contains content that may be inappropriate for work or viewers under 18. Continue only if you wish to view this content.',
   announcement: '',             // banner text shown at the top of every page
   faq_text: '',                 // content of the /faq page (blank = no FAQ page)
   backup_interval_hours: '24',  // automatic database snapshots (0 = off)

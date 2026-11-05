@@ -50,6 +50,7 @@ export function boardsPage(a, boards, msg) {
     <label>Slug <input name="slug" required pattern="[a-z0-9]{1,16}" placeholder="g"> <small>lowercase letters/numbers, becomes /slug/</small></label>
     <label>Title <input name="title" required maxlength="60" placeholder="Technology"></label>
     <label>Bio <textarea name="bio" rows="3" maxlength="500" placeholder="What this board is about"></textarea></label>
+    <label>Content rating <select name="nsfw"><option value="0">SFW</option><option value="1">NSFW (show warning before entry)</option></select></label>
     <label class="check"><input type="checkbox" name="visible" checked> Visible to users</label>
     <label>Thread cooldown override (s) <input type="number" name="thread_cooldown" min="0" placeholder="site default"></label>
     <label>Reply cooldown override (s) <input type="number" name="reply_cooldown" min="0" placeholder="site default"></label>
@@ -75,8 +76,8 @@ export function boardsPage(a, boards, msg) {
     <label class="wide">Rules <textarea name="rules" rows="3" maxlength="3000" placeholder="shown above the board">${esc(b.rules)}</textarea></label>
     <label class="check"><input type="checkbox" name="poster_ids"${b.poster_ids ? ' checked' : ''}> Show per-thread poster IDs</label>
     <label class="check"><input type="checkbox" name="country_flags"${b.country_flags ? ' checked' : ''}> Show country flags</label>
+    <label>Content rating <select name="nsfw"><option value="0"${b.nsfw ? '' : ' selected'}>SFW</option><option value="1"${b.nsfw ? ' selected' : ''}>NSFW (show warning before entry)</option></select></label>
     <details class="wide"><summary>Posting rules</summary>
-      <label class="check"><input type="checkbox" name="nsfw"${b.nsfw ? ' checked' : ''}> NSFW board (marked on the board list)</label>
       <label class="check"><input type="checkbox" name="text_only"${b.text_only ? ' checked' : ''}> Text-only (no files)</label>
       <label class="check"><input type="checkbox" name="require_subject"${b.require_subject ? ' checked' : ''}> Require a subject for new threads</label>
       <label class="check"><input type="checkbox" name="forced_anon"${b.forced_anon ? ' checked' : ''}> Forced anonymity (no names or tripcodes)</label>
@@ -138,6 +139,11 @@ export function settingsPage(a, s, msg) {
   ${num('archive_days', 'Keep archived threads for (days)', 'Pruned and inactive threads stay read-only in the board archive this long. 0 = delete them immediately.')}
   <label>Announcement <textarea name="announcement" rows="2" maxlength="1000" placeholder="shown at the top of every page (blank = none)">${esc(s.announcement)}</textarea></label>
   <label>FAQ page <textarea name="faq_text" rows="6" maxlength="20000" placeholder="content of /faq (blank = no FAQ page)">${esc(s.faq_text)}</textarea></label>
+  <fieldset><legend>NSFW board warning</legend>
+  <label>Warning title <input name="nsfw_warning_title" maxlength="120" value="${esc(s.nsfw_warning_title)}"></label>
+  <label>Warning message <textarea name="nsfw_warning_text" rows="4" maxlength="3000">${esc(s.nsfw_warning_text)}</textarea></label>
+  <small>Shown before entering an NSFW board. Confirmation lasts for the browser session, separately for each board. Blank fields restore the default text.</small>
+  </fieldset>
   <fieldset><legend>Rate limits &amp; spam</legend>
   ${num('cooldown_thread_sec', 'New-thread cooldown (seconds)', 'Per IP, per board. Boards can override this.')}
   ${num('cooldown_reply_sec', 'Reply cooldown (seconds)', 'Per IP, per board. Boards can override this.')}

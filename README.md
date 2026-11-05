@@ -306,3 +306,5 @@ Issues and pull requests are welcome. Please run `npm test` before opening a PR.
 ## 📄 License
 
 MIT
+
+Boards can be marked **SFW** or **NSFW** under **Admin → Boards**, when creating or editing a board. NSFW board pages display a confirmation warning before showing content, including direct thread and catalog links. Confirmation is remembered separately for each board for the browser session. Customize the warning title and message under **Admin → Settings → NSFW board warning**.

@@ -36,7 +36,7 @@ export function registerAdmin(app, ctx) {
     rules: String(body.rules || '').replace(/\r\n/g, '\n').trim().slice(0, 3000),
     poster_ids: body.poster_ids ? 1 : 0,
     country_flags: body.country_flags ? 1 : 0,
-    nsfw: body.nsfw ? 1 : 0,
+    nsfw: body.nsfw === '1' || body.nsfw === 'on' ? 1 : 0,
     text_only: body.text_only ? 1 : 0,
     require_subject: body.require_subject ? 1 : 0,
     forced_anon: body.forced_anon ? 1 : 0,
@@ -227,6 +227,9 @@ export function registerAdmin(app, ctx) {
       ? String(req.body.birthday_date).trim() : '';
     next.birthday_hat = ['party', 'crown', 'wizard'].includes(req.body.birthday_hat) ? req.body.birthday_hat : 'party';
     next.birthday_color = /^#[0-9a-f]{6}$/i.test(req.body.birthday_color || '') ? req.body.birthday_color : '#e0457b';
+    for (const [key, limit] of [['nsfw_warning_title', 120], ['nsfw_warning_text', 3000]]) {
+      next[key] = String(req.body[key] ?? before[key]).replace(/\r\n/g, '\n').trim().slice(0, limit) || SETTING_DEFAULTS[key];
+    }
     next.announcement = String(req.body.announcement || '').trim().slice(0, 1000);
     next.faq_text = String(req.body.faq_text || '').replace(/\r\n/g, '\n').trim().slice(0, 20000);
     next.geoip_header = String(req.body.geoip_header || '').trim().replace(/[^A-Za-z0-9-]/g, '').slice(0, 64);

@@ -339,6 +339,28 @@ export function createServer(opts) {
     res.redirect('/admin/boards?msg=Banner+removed');
   });
 
+  // Gate board pages before rendering posts or loading their media. No JavaScript required.
+  app.post('/:slug/nsfw/accept', (req, res, next) => {
+    const board = getVisibleBoard(req, req.params.slug);
+    if (!board) return next();
+    const prefix = `/${board.slug}/`;
+    const destination = String(req.body.destination || '');
+    const safeDestination = destination.startsWith(prefix) && !/[\\\r\n]/.test(destination)
+      ? destination : prefix;
+    res.cookie(`nsfw_${board.slug}`, '1', { httpOnly: true, sameSite: 'lax', secure: req.secure, path: '/' });
+    res.set('Cache-Control', 'private, no-store');
+    res.redirect(303, safeDestination);
+  });
+  app.use('/:slug', (req, res, next) => {
+    if (req.method !== 'GET' && req.method !== 'HEAD') return next();
+    const board = getVisibleBoard(req, req.params.slug);
+    if (!board || !board.nsfw) return next();
+    res.set('Cache-Control', 'private, no-store');
+    const accepted = (req.headers.cookie || '').split(';').some((part) => part.trim() === `nsfw_${board.slug}=1`);
+    if (accepted) return next();
+    render(req, res, 'NSFW warning', V.nsfwWarningPage(board, getSettings(db), req.originalUrl));
+  });
+
   // --- board routes (Express 5 matches /g and /g/ alike) ---
   app.get('/:slug', (req, res, next) => {
     const board = getVisibleBoard(req, req.params.slug);
