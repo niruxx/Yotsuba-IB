@@ -1,0 +1,17 @@
+{
+  "name": "yotsuba-ib",
+  "version": "0.1.0",
+  "description": "Self-hosted anonymous imageboard server. One command, one admin, unlimited boards.",
+  "type": "module",
+  "bin": { "yotsuba-ib": "bin/cli.js" },
+  "main": "src/server.js",
+  "files": ["bin", "src", "public"],
+  "scripts": { "start": "node bin/cli.js" },
+  "engines": { "node": ">=22.13" },
+  "keywords": ["imageboard", "chan", "forum", "anonymous", "self-hosted"],
+  "license": "MIT",
+  "dependencies": {
+    "express": "^5.1.0",
+    "multer": "^2.0.0"
+  }
+}
