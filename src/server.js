@@ -7,6 +7,8 @@ import { fileURLToPath } from 'node:url';
 import { openDb, getSettings, parsePerms, parseBoards, can, serverSecret } from './db.js';
 import { storeMedia, thumbPath } from './media.js';
 import { registerApi } from './api.js';
+import { getHomepage, homepageData, registerHomepage } from './homepage.js';
+import * as HV from './homepageViews.js';
 import { snapshotDb } from './backup.js';
 import { registerAdmin } from './admin.js';
 import { createModeration, registerModeration, normIp } from './moderation.js';
@@ -104,7 +106,7 @@ export function createServer(opts) {
     const mmdd = `${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
     const birthday = st.birthday_date && st.birthday_date === mmdd ? { hat: st.birthday_hat, color: st.birthday_color } : null;
     const html = V.layout({ title, siteName, admin: req.admin, boards: listBoards(req), alertCount, body,
-      announcement: st.announcement, hasFaq: !!st.faq_text.trim(), birthday });
+      announcement: st.announcement, hasFaq: !!st.faq_text.trim(), birthday, labels: getHomepage(db).labels });
     res.status(status).type('html').send(withCsrf(req, html));
   };
   // Adds the staff CSRF token to every POST form in a chunk of HTML.
@@ -234,7 +236,8 @@ export function createServer(opts) {
 
   // --- public routes ---
   app.get('/', (req, res) => {
-    render(req, res, siteName, V.homePage(listBoards(req)));
+    const cfg = getHomepage(db);
+    render(req, res, siteName, HV.homePage(cfg, homepageData(db, req, cfg), siteName));
   });
 
   app.get('/faq', (req, res, next) => {
@@ -263,6 +266,7 @@ export function createServer(opts) {
   const { audit } = registerAdmin(app, { db, render, fail, deletePost, uploadDir, getBoard, RESERVED, runPurge });
   registerModeration(app, { db, render, fail, deletePost, mod, audit, rmUpload, uploadDir });
   registerApi(app, { db, getVisibleBoard, listBoards, thumbPath });
+  registerHomepage(app, { db, dataDir, render, fail, audit, csrfOk, views: HV });
 
   // --- health & metrics ---
   app.get('/healthz', (req, res) => {

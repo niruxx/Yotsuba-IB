@@ -8,7 +8,7 @@ function nav(a) {
   if (can(a, 'manage_bans')) links.push(['/admin/bans', 'Bans']);
   if (can(a, 'manage_boards')) links.push(['/admin/boards', 'Boards']);
   if (can(a, 'view_logs')) links.push(['/admin/logs', 'Post logs']);
-  if (can(a, 'manage_settings')) links.push(['/admin/settings', 'Settings']);
+  if (can(a, 'manage_settings')) links.push(['/admin/settings', 'Settings'], ['/admin/homepage', 'Homepage']);
   if (a.role === 'owner') links.push(['/admin/accounts', 'Accounts'], ['/admin/audit', 'Staff activity']);
   links.push(['/admin/account', 'My account']);
   return `<nav class="adminnav">${links.map(([h, t]) => `<a href="${h}">${t}</a>`).join(' · ')}</nav>`;

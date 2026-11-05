@@ -778,6 +778,29 @@
   });
 
   // ======================================================================
+  // Home page (Standard layout): sortable, filterable board table
+  // ======================================================================
+  const boardTable = $('.hp-board-table');
+  if (boardTable) {
+    $('.hp-board-filter')?.addEventListener('input', (e) => {
+      const q = e.target.value.trim().toLowerCase();
+      $$('tbody tr', boardTable).forEach((tr) => { tr.hidden = q && !tr.dataset.text.includes(q); });
+    });
+    $$('th[data-sort]', boardTable).forEach((th, col) => th.addEventListener('click', () => {
+      const desc = th.dataset.dir !== 'desc';
+      $$('th', boardTable).forEach((h) => { delete h.dataset.dir; });
+      th.dataset.dir = desc ? 'desc' : 'asc';
+      const num = th.dataset.sort === 'num';
+      const rows = $$('tbody tr', boardTable).sort((a, b) => {
+        const x = a.children[col].dataset.v; const y = b.children[col].dataset.v;
+        const c = num ? Number(x) - Number(y) : x.localeCompare(y);
+        return desc ? -c : c;
+      });
+      $('tbody', boardTable).append(...rows);
+    }));
+  }
+
+  // ======================================================================
   // Catalog filter + existing videos
   // ======================================================================
   const cf = $('#catalog-filter');

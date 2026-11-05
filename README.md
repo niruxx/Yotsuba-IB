@@ -1,131 +1,308 @@
-# Yotsuba-IB
+<p align="center">
+  <img src="docs/banner.svg" alt="Yotsuba-IB" width="100%">
+</p>
 
-A self-hosted anonymous imageboard you can start with one command.
+<p align="center">
+  <a href="https://github.com/niruxx/Yotsuba-IB/actions/workflows/ci.yml"><img src="https://github.com/niruxx/Yotsuba-IB/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <img src="https://img.shields.io/badge/node-%E2%89%A5%2022.13-339933?logo=node.js&logoColor=white" alt="Node 22.13+">
+  <img src="https://img.shields.io/badge/database-SQLite-003B57?logo=sqlite&logoColor=white" alt="SQLite">
+  <img src="https://img.shields.io/badge/docker-ready-2496ED?logo=docker&logoColor=white" alt="Docker ready">
+  <img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT license">
+</p>
 
-- Anonymous posting with threads, replies, `>greentext` and `>>123` quote links
-- Image and video uploads (jpg, png, gif, webp, mp4, webm). File types are checked by their content, not by the client's word
-- **Owner account** created on first run, plus **staff accounts** with permissions granted user-by-user
-- Admin panel: boards (`/slug/` + title + bio), post deletion, settings, accounts, logs
-- **Post logs**: IP address, user agent, content and upload of every thread and reply (can be switched on/off)
-- **Staff activity log**: the owner sees every action other staff take
-- **Retention settings**: purge inactive threads after N days, delete uploads after N days, expire logs
-- Bumping, a bump limit, auto-pruning of old threads, cooldowns and spam controls
-- Stores everything in one SQLite file plus an uploads folder, using Node's built-in `node:sqlite` (no native build step)
+<p align="center">
+  <b>A self-hosted anonymous imageboard you can run with one command.</b><br>
+  Boards, threads, image and video uploads, a full moderation suite and staff roles. Everything is stored in one SQLite file and an uploads folder.
+</p>
 
-## Install as a service (Linux)
+<p align="center">
+  <a href="#-quick-start">Quick start</a> ·
+  <a href="#-install-update--uninstall-linux-service">Install</a> ·
+  <a href="#-features">Features</a> ·
+  <a href="#-screenshots">Screenshots</a> ·
+  <a href="#%EF%B8%8F-administration">Administration</a> ·
+  <a href="#-operations">Operations</a> ·
+  <a href="ROADMAP.md">Roadmap</a>
+</p>
+
+---
+
+## 📸 Screenshots
+
+> Screenshots live in [`docs/screenshots/`](docs/screenshots/). See the list there if you want to add or refresh them.
+
+| Home (4chan-style Legacy layout) | Home (8kun-style Standard layout) |
+|---|---|
+| ![Legacy home page](docs/screenshots/home-legacy.png) | ![Standard home page](docs/screenshots/home-standard.png) |
+| **Board index** | **Thread with quick reply** |
+| ![Board](docs/screenshots/board.png) | ![Thread](docs/screenshots/thread.png) |
+| **Catalog** | **User settings** |
+| ![Catalog](docs/screenshots/catalog.png) | ![Settings](docs/screenshots/settings.png) |
+| **Live moderation alerts** | **Homepage editor** |
+| ![Alerts](docs/screenshots/admin-alerts.png) | ![Homepage editor](docs/screenshots/admin-homepage.png) |
+
+---
+
+## ✨ Features
+
+<table>
+<tr><td valign="top" width="50%">
+
+### 🗨️ Posting
+- Threads and replies, `>greentext`, `>>123` quotes and `>>>/board/123` cross-board links
+- 📎 Uploads: **jpg, png, gif, webp, mp4, webm**, with file types checked by content
+- 🖼️ Thumbnails for images *and* videos
+- 🕵️ **EXIF/GPS and video metadata stripped** automatically
+- 🔑 Tripcodes (`Name#pass`) and secure tripcodes (`Name##pass`)
+- `sage` / `nonoko` options, spoiler images, `[spoiler]` and `[code]` tags
+- 🗑️ Posters can delete their own posts with a deletion password
+- 🏳️ Optional per-thread poster IDs and country flags
+
+</td><td valign="top">
+
+### 🧭 Browsing
+- 🗂️ Board index, **catalog**, read-only **archive**, **search** and **RSS**
+- 🔄 Thread auto-updater, unread counter and last-read marker
+- 💬 Quick-reply box, hover previews, inline quotes, backlinks and **(You)** markers
+- 👀 Thread watcher with unread counts
+- 🙈 Post hiding and filters (text, regex, name, tripcode, ID)
+- 🎨 Themes: **Yotsuba**, **Yotsuba B** and **Tomorrow** (dark)
+- ⌨️ Keyboard shortcuts and a mobile-friendly layout
+- ⚙️ A 4chan-style settings panel with six tabs, all saved in the browser
+
+</td></tr>
+<tr><td valign="top">
+
+### 🛡️ Moderation
+- 🚨 **Live keyword alerts** with on-screen pop-ups and desktop notifications
+- 🚫 Bans by **IP**, **IP range** or **country**, blocking either posting or the whole site
+- 🧬 File bans by SHA-256 and **perceptual hash**, which catch re-encoded copies
+- 📣 User reports and **ban appeals**
+- 📌 Sticky, lock, move and archive threads; delete just a file
+- 🤖 Spam controls: cooldowns, link limits, duplicate-text rejection, flood limits
+- 🔐 CSRF protection and limits on login attempts
+
+</td><td valign="top">
+
+### 👑 Administration
+- **Owner** account created on first run
+- **Staff** accounts with permissions granted one at a time, optionally limited to certain boards ("janitors")
+- 📜 **Post logs**: IP, user agent, content and uploads, switchable on/off
+- 🕵️ **Staff activity log**: the owner sees everything other staff do
+- 🏠 **Homepage editor**: 4chan or 8kun presets, reorderable sections, renamable interface text, logo
+- 🗓️ Retention settings for inactive threads, uploads and logs
+- 🎉 Birthday hats on a date of your choosing
+
+</td></tr>
+</table>
+
+---
+
+## 📋 Requirements
+
+| | Required | Notes |
+|---|---|---|
+| 🟢 **Node.js** | **22.13+** | Uses the built-in `node:sqlite`, so there's no database server to install |
+| 🐧 **OS** | Linux, macOS or Windows | `install.sh` supports Arch, Debian/Ubuntu, Fedora/RHEL/Rocky/Alma and openSUSE with systemd |
+| 🖼️ **sharp** | optional, installed automatically | Image thumbnails, metadata stripping and similar-image bans |
+| 🎞️ **ffmpeg** | optional | Video thumbnails and video metadata stripping (`install.sh` installs it) |
+| 🌍 **GeoIP DB** | optional | Needed for country bans and flags: `yotsuba-ib update-geoip` (free [DB-IP](https://db-ip.com) Lite, CC BY 4.0) |
+| 💾 **Disk** | ~100 MB plus uploads | |
+
+Without sharp or ffmpeg everything still works. Files are just stored as uploaded and shown without thumbnails.
+
+---
+
+## 🚀 Quick start
 
 ```bash
-git clone <this repo> && cd Yotsuba-IB
-sudo ./install.sh     # detects Arch / Debian / Ubuntu / Fedora / RHEL / openSUSE, installs Node + git,
-                      # creates the owner account and a systemd service (yotsuba-ib)
-sudo ./update.sh      # git pull + npm install; database, uploads and logs are untouched (DB is backed up first)
-sudo ./uninstall.sh   # removes EVERYTHING: service, code, database, uploads, logs, config, user
+git clone https://github.com/niruxx/Yotsuba-IB.git
+cd Yotsuba-IB
+npm install
+npm start
 ```
 
-Layout: code in `/opt/yotsuba-ib`, data in `/opt/yotsuba-ib-data`, config in `/opt/yotsuba-ib/config/yotsuba.env`.
-View logs with `journalctl -u yotsuba-ib -f`.
+1. On first run you'll be asked to create the **owner** account.
+2. Open **http://localhost:8420/admin** and log in.
+3. Go to **Boards** and create your first board, e.g. `/b/`.
+4. Visit **http://localhost:8420** 🎉
 
-## Quick start (manual)
+> 💡 For setups without a terminal to answer prompts, set the owner account with environment variables instead:
+> `YOTSUBA_ADMIN_USER=owner YOTSUBA_ADMIN_PASS='a-long-password' npm start`
 
-Requires **Node.js 22.13+**.
+---
+
+## 🐧 Install, update & uninstall (Linux service)
+
+The scripts set Yotsuba-IB up as a **systemd service** with its own system user, restricted file access, and the data kept separate from the code.
+
+### 📥 Install
 
 ```bash
-npx yotsuba-ib            # once published to npm
-# or from this repo:
-npm install && npm start
+git clone https://github.com/niruxx/Yotsuba-IB.git
+cd Yotsuba-IB
+sudo ./install.sh
 ```
 
-On first run you'll be asked for an admin username and password. Then open
-`http://localhost:8420/admin`, log in, and create your first board.
+The installer:
 
-For Docker or other non-interactive setups, set the admin account with environment variables:
+1. 🔍 **Detects your distro** (Arch, Debian/Ubuntu, Fedora/RHEL, openSUSE)
+2. 📦 Installs **git, curl, ffmpeg and Node.js 22+**, adding the NodeSource repository if your distro's Node is too old
+3. ❓ Asks for the **port** (default `8420`), address to listen on, site name, whether it runs behind a reverse proxy, and the upload limit
+4. 👤 Creates the `yotsuba` system user, clones the code and installs packages
+5. 🌍 Downloads the GeoIP country database
+6. 👑 Asks you to create the **owner** account
+7. ⚙️ Creates and starts `yotsuba-ib.service`, and offers to open the port in firewalld or ufw
+
+| What | Where |
+|---|---|
+| 📁 Code (git clone) | `/opt/yotsuba-ib` |
+| ⚙️ Config | `/opt/yotsuba-ib/config/yotsuba.env` |
+| 💾 Database, uploads, backups | `/opt/yotsuba-ib-data` |
+| 📜 Logs | `journalctl -u yotsuba-ib -f` |
+
+### 🔄 Update
 
 ```bash
-YOTSUBA_ADMIN_USER=admin YOTSUBA_ADMIN_PASS='a-long-password' npx yotsuba-ib --port 8080
+sudo ./update.sh
 ```
 
-## Options
+Backs up the database (keeping the last 10 backups), pulls the latest code, reinstalls packages, refreshes the GeoIP database and restarts the service.
+**Your database, uploads, logs and config are never touched.**
 
-```
-yotsuba-ib [add-admin | reset-password <user> | update-geoip] [options]
-  -p, --port <n>        Port (default 8420)
-      --host <addr>     Bind address (default 0.0.0.0)
-  -d, --data <dir>      Data directory (default ./yotsuba-data)
-      --name <text>     Site name
-      --max-file-mb <n> Upload limit in MB (default 20)
-      --trust-proxy     Read the client IP from X-Forwarded-For (use behind nginx/Caddy)
+### 🗑️ Uninstall
+
+```bash
+sudo ./uninstall.sh
 ```
 
-## Posting & browsing
+> ⚠️ **Permanently deletes everything:** the service, code, database, all uploads, logs, backups, config, the `yotsuba` user and its journal logs. You must type `delete everything` to confirm. It also offers to delete the folder you ran it from. Node.js, git and ffmpeg are left installed.
 
-- **Posting**: tripcodes (`Name#pass`, secure `Name##pass`), options (`sage`, `nonoko`), spoiler images, `[spoiler]` and `[code]` tags, `>>>/board/123` links, a deletion password.
-- **Uploads**: EXIF/GPS and video metadata are stripped, dimensions recorded and thumbnails generated (sharp for images, ffmpeg for videos). Without them, files are stored as-is and shown full-size.
-- **Boards**: index, catalog (sortable, filterable), read-only archive, search, RSS (`/board/rss.xml`), optional rules, categories, ordering, poster IDs and country flags (configured per board).
-- **Threads**: auto-update, quick reply (click a post number), hover previews of quoted posts, backlinks and "(You)" markers.
-- **Per-browser settings** (top-right "settings"): theme (Yotsuba, Yotsuba B, Tomorrow), full-size preview on hover, video sound and volume, auto-update.
-- **Site-wide**: an announcement banner and a `/faq` page, both edited in admin Settings.
+---
 
-## Operations
+## 🐳 Docker
 
-- **Docker**: `docker compose up -d` (edit the owner credentials in `docker-compose.yml` first). Data lives in the `yotsuba-data` volume.
-- **Backups**: automatic database snapshots go to `<data>/backups/` (interval and count in Settings).
-  `yotsuba-ib backup [file.tar.gz]` makes a full backup (database + uploads + banners) while running;
-  `yotsuba-ib restore <file>` restores one (stop the server first; the old data is moved aside, not deleted).
-  For systemd installs run these as the service user, e.g. `sudo -u yotsuba node /opt/yotsuba-ib/bin/cli.js backup --data /opt/yotsuba-ib-data`.
-- **Monitoring**: `GET /healthz` (JSON) and `GET /metrics` (Prometheus). `/metrics` only answers localhost unless
-  `YOTSUBA_METRICS_TOKEN` is set, in which case send `Authorization: Bearer <token>`.
-- **JSON API** (read-only, CORS-enabled, hidden boards excluded): `/api/boards.json`, `/api/<board>/catalog.json`,
-  `/api/<board>/threads/<id>.json`, `/api/<board>/archive.json`.
-- **Tests**: `npm test` (Node's built-in test runner; unit tests plus an end-to-end run against a temporary server). CI runs them on every push.
-
-## Upload storage
-
-Uploads are stored per thread, named so staff with server access can see who uploaded what:
-
-```
-uploads/threads/<threadId>-<subject>.<OP's IP>/post-image-<IP>.<ext>          # thread's opening image
-uploads/threads/<threadId>-<subject>.<OP's IP>/<postId>.imagefile.<IP>.<ext>   # each reply's file
+```bash
+# 1. Edit YOTSUBA_ADMIN_USER / YOTSUBA_ADMIN_PASS in docker-compose.yml
+# 2. Start it
+docker compose up -d
+# 3. Optional: enable country bans and flags
+docker compose exec yotsuba node bin/cli.js update-geoip && docker compose restart
 ```
 
-This folder is **never served directly**. The site serves files as `/media/<postId>.<ext>`, so visitors never see IPs.
-When post logging is switched off, `nolog` is written in place of the IP. Deleting a thread deletes its folder.
+Data is kept in the `yotsuba-data` volume. The image includes ffmpeg and a health check.
 
-## Roles and permissions
+---
 
-The first account is the **owner** and can do everything: create and edit boards, change settings, view post logs,
-create staff accounts, grant permissions one by one, rename accounts, reset passwords, disable accounts (with a reason)
-and view the staff activity log. Staff accounts start with no permissions. The owner can grant any of these:
+## 🛠️ Command line
+
+```
+yotsuba-ib [command] [options]
+
+Commands
+  (none)                 Start the server (asks for an owner account on first run)
+  add-admin              Create a staff account (grant its permissions in Admin → Accounts)
+  reset-password <user>  Set a new password for an account (e.g. a locked-out owner)
+  update-geoip           Download/refresh the country database
+  backup [file.tar.gz]   Full backup: database + uploads + banners (safe while running)
+  restore <file>         Restore a backup (stop the server first; current data is moved aside)
+
+Options
+  -p, --port <n>         Port (default 8420, env PORT)
+      --host <addr>      Bind address (default 0.0.0.0, env HOST)
+  -d, --data <dir>       Data directory (default ./yotsuba-data, env YOTSUBA_DATA)
+      --name <text>      Site name (env YOTSUBA_NAME)
+      --max-file-mb <n>  Upload limit in MB (default 20)
+      --trust-proxy      Use X-Forwarded-For (enable behind nginx/Caddy/Cloudflare)
+```
+
+> 💡 On systemd installs, run commands as the service user:
+> `sudo -u yotsuba node /opt/yotsuba-ib/bin/cli.js backup --data /opt/yotsuba-ib-data`
+
+---
+
+## 🛡️ Administration
+
+### 👥 Roles & permissions
+
+The **owner** (the first account) can do everything:
+
+- create staff accounts and grant permissions one at a time
+- rename accounts and reset their passwords
+- disable accounts, with a reason
+- view the staff activity log
+
+Staff start with **no permissions**:
 
 | Permission | Allows |
 |---|---|
-| `delete_posts` | Delete posts and threads |
-| `view_logs` | View post logs, including IP addresses |
-| `manage_boards` | Create, edit and delete boards |
-| `manage_settings` | Turn logging on/off, change retention periods, GeoIP header |
-| `view_alerts` | Live notifications for keyword matches, blocked posts and user reports |
-| `manage_filters` | Add/remove keyword alert and block rules |
-| `manage_bans` | Ban IPs, IP ranges, countries and files; handle appeals |
+| `delete_posts` | 🗑️ Delete posts and files; sticky, lock and move threads |
+| `view_logs` | 📜 View post logs, including IP addresses |
+| `manage_boards` | 🗂️ Create, edit and delete boards; banners and per-board rules |
+| `manage_settings` | ⚙️ Site settings, retention, spam limits and the homepage editor |
+| `view_alerts` | 🚨 Live keyword alerts, reports and appeals |
+| `manage_filters` | 🔤 Keyword alert and block rules |
+| `manage_bans` | 🚫 IP, range, country and file bans; handle appeals |
 
-Any staff account can be limited to specific boards ("Limit to boards" on the Accounts page). Its post, alert and
-log permissions then only apply to those boards, which makes it a board janitor/moderator.
+**Limit to boards** (on the Accounts page) restricts a staff member to specific boards, which turns them into a board janitor.
 
-## Moderation
+### 🧰 Admin pages
 
-- **Keyword rules** (`/admin/filters`): a word, sentence or regex. *Alert* lets the post through and notifies staff; *block* rejects it and notifies staff.
-- **Alerts** (`/admin/alerts`): keyword matches, blocked posts and user reports. Staff with `view_alerts` get a live counter and pop-ups on every page (and optional desktop notifications), then resolve, delete or ban from there.
-- **Bans** (`/admin/bans`): IP, CIDR range or country; blocks posting or all access; 1 hour to permanent. Each post has a staff menu for delete / delete file / sticky / lock / ban / ban file.
-- **Spam controls** (Settings): separate thread/reply/upload cooldowns (boards can override thread/reply), max links per post, duplicate-text rejection, and a per-board flood limit across all IPs.
-- **File bans** block the exact file (SHA-256) and, for images, visually similar copies (perceptual hash; needs the optional `sharp` package, installed automatically on common platforms).
-- **Ban appeals**: banned users can appeal from the ban page; appeals show up as alerts and on the Bans page.
-- **Capcodes**: logged-in staff can tick "Post with staff capcode" to post as `## Admin` (owner) or `## Mod`.
-- **Self-deletion**: posters can delete their own posts with a deletion password their browser remembers.
-- **Country bans** need a country source: run `yotsuba-ib update-geoip` (downloads the free [DB-IP](https://db-ip.com) Lite database, CC BY 4.0; `install.sh` and `update.sh` do this for you), or set your CDN's header (e.g. `CF-IPCountry`) in Settings with `--trust-proxy`. Logged-in staff are never blocked by access bans.
+| Page | What it's for |
+|---|---|
+| 🏠 **Homepage** | Layout presets (4chan **Legacy** / 8kun **Standard**), section order and titles, custom text blocks, logo, and renaming interface text |
+| 🗂️ **Boards** | Slug, title, bio, category, order, visibility, rules, banners, cooldowns, NSFW, allowed file types, text-only, required subject, forced anonymity, bump and image limits |
+| 🚨 **Alerts** | Keyword matches, blocked posts, reports and appeals, updating live |
+| 🔤 **Keyword rules** | Words, sentences or regexes that either *alert* or *block* |
+| 🚫 **Bans** | IP, CIDR range or country ban; posting-only or full site; 1 hour to permanent; appeals and banned files |
+| 📜 **Post logs** | IP, user agent, content and upload of every post, filterable by IP, board or type |
+| ⚙️ **Settings** | Logging on/off, retention, archive length, cooldowns, spam limits, announcement, FAQ, backups, birthday hats, GeoIP header |
+| 👥 **Accounts** / 🕵️ **Staff activity** | Owner only |
 
-Locked out? `yotsuba-ib reset-password <username> --data <dir>` (as the service user for systemd installs).
+### 🗄️ Upload storage
 
-## Production notes
+Files are stored per thread, so staff with server access can see who uploaded what:
 
-- Post logging stores raw IP addresses. Check the privacy law that applies to you (e.g. GDPR) and set a log retention period.
-- Run it behind a reverse proxy with HTTPS (Caddy is the easiest) and pass `--trust-proxy`.
-- Back up the data directory. It holds the database and all uploads.
-- You are responsible for moderating what users upload to your site.
+```
+uploads/threads/<threadId>-<subject>.<OP's IP>/post-image-<IP>.<ext>
+uploads/threads/<threadId>-<subject>.<OP's IP>/<postId>.imagefile.<IP>.<ext>
+```
+
+🔒 This folder is **never served directly**. Visitors get files from `/media/<postId>.<ext>`, which never reveals the path. When post logging is off, `nolog` is written instead of the IP.
+
+---
+
+## 📈 Operations
+
+| | |
+|---|---|
+| 💾 **Backups** | Automatic database snapshots (interval and number kept are set in Settings); `yotsuba-ib backup` / `restore` for full backups |
+| ❤️ **Health** | `GET /healthz` returns JSON status |
+| 📊 **Metrics** | `GET /metrics` in Prometheus format. Only answers localhost unless `YOTSUBA_METRICS_TOKEN` is set; then send `Authorization: Bearer <token>` |
+| 🔌 **JSON API** | Read-only, CORS enabled, hidden boards excluded, no IPs: `/api/boards.json`, `/api/<board>/catalog.json`, `/api/<board>/threads/<id>.json`, `/api/<board>/archive.json` |
+| 🧪 **Tests** | `npm test`: unit tests plus end-to-end tests against a temporary server; also run by GitHub Actions CI |
+
+---
+
+## 🏭 Production checklist
+
+- [ ] 🔒 Run it behind a reverse proxy with **HTTPS** (Caddy is the easiest) and pass `--trust-proxy`
+- [ ] 💾 Back up the data directory, or schedule `yotsuba-ib backup`
+- [ ] ⚖️ Post logging stores **raw IP addresses**. Check the privacy laws that apply to you (e.g. GDPR) and set a log retention period
+- [ ] 🌍 If you use country bans or flags, credit **DB-IP** on your site (CC BY 4.0 licence requirement)
+- [ ] 🧹 Set up keyword rules and spam limits **before** going public
+- [ ] 👮 You are responsible for moderating what users upload to your site
+
+---
+
+## 🗺️ Roadmap
+
+See [**ROADMAP.md**](ROADMAP.md) for what's done and what's next. The main open items are captcha, two-factor login for staff, S3 storage and multiple files per post.
+
+## 🤝 Contributing
+
+Issues and pull requests are welcome. Please run `npm test` before opening a PR.
+
+## 📄 License
+
+MIT

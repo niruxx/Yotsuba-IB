@@ -64,6 +64,40 @@ test('admin login, CSRF and board creation', async () => {
   assert.match(home, /\/g\/ - Technology/);
 });
 
+test('homepage: presets, section order and renamed labels', async () => {
+  const legacy = await (await fetch(base)).text();
+  assert.match(legacy, /class="hp hp-legacy"/);
+  assert.match(legacy, /What is Yotsuba-IB\?/);
+
+  const multipart = (fields) => {
+    const fd = new FormData();
+    fd.append('_csrf', csrf);
+    for (const [k, v] of Object.entries(fields)) fd.append(k, v);
+    return fetch(`${base}/admin/homepage`, { method: 'POST', body: fd, redirect: 'manual', headers: { cookie } });
+  };
+  assert.equal((await multipart({ preset: 'standard' })).status, 302);
+  const standard = await (await fetch(base)).text();
+  assert.match(standard, /class="hp hp-standard"/);
+  assert.match(standard, /hp-board-table/);
+
+  // Rename labels, retitle and reorder: stats first, intro hidden.
+  const r = await multipart({
+    layout: 'standard', enabled_stats: 'on', order_stats: '1', title_stats: 'Numbers',
+    enabled_boards: 'on', order_boards: '2', label_col_pph: 'Posts/hr', label_nav_search: 'find', label_footer: 'My footer',
+  });
+  assert.equal(r.status, 302);
+  const custom = await (await fetch(base)).text();
+  assert.match(custom, /Posts\/hr/);
+  assert.match(custom, />find</);
+  assert.match(custom, /My footer/);
+  assert.doesNotMatch(custom, /What is Yotsuba-IB/);
+  assert.ok(custom.indexOf('Numbers') < custom.indexOf('hp-board-table'), 'stats should come before the board list');
+
+  // Without a CSRF token the change is refused.
+  const fd = new FormData(); fd.append('preset', 'legacy');
+  assert.equal((await fetch(`${base}/admin/homepage`, { method: 'POST', body: fd, headers: { cookie } })).status, 403);
+});
+
 test('threads need a file; posting works; replies render with backlinks', async () => {
   const noFile = await anonPost('g', { subject: 'hi', body: 'no file' });
   assert.equal(noFile.status, 400);

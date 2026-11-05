@@ -6,7 +6,8 @@ import {
 const THEME_BOOT = `<script>try{const p=JSON.parse(localStorage.getItem('prefs')||'{}');
 document.documentElement.dataset.theme=p.theme||'yotsuba-b';}catch{}</script>`;
 
-export function layout({ title, siteName, admin, boards = [], alertCount = null, body, announcement = '', hasFaq = false, ctx = {}, birthday = null }) {
+export function layout({ title, siteName, admin, boards = [], alertCount = null, body, announcement = '', hasFaq = false, ctx = {}, birthday = null, labels = {} }) {
+  const L = { nav_search: 'search', nav_settings: 'settings', nav_admin: 'admin', footer: 'Powered by Yotsuba-IB', ...labels };
   return `<!DOCTYPE html>
 <html lang="en" data-theme="yotsuba-b"${birthday ? ` class="birthday" style="--hat-color:${esc(birthday.color)};--hat-url:url(/static/hats/${esc(birthday.hat)}.svg)"` : ''}><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -18,9 +19,9 @@ ${THEME_BOOT}
   <a href="/" class="sitename">${esc(siteName)}</a>
   <span class="boardnav">[ ${boards.map((b) => `<a href="/${esc(b.slug)}/" title="${esc(b.title)}"${b.hidden ? ' class="hiddenboard"' : ''}>${esc(b.slug)}</a>`).join(' / ')} ]</span>
   <span class="right">
-    <a href="/search">search</a> · <a href="#" id="open-settings">settings</a>
+    <a href="/search">${esc(L.nav_search)}</a> · <a href="#" id="open-settings">${esc(L.nav_settings)}</a>
     ${admin ? ` · ${alertCount !== null
-    ? `<a href="/admin/alerts" class="alertbadge${alertCount ? ' hot' : ''}" id="alertbadge">alerts (<span id="alertcount">${alertCount}</span>)</a> · ` : ''}<a href="/admin">admin</a> · <form method="post" action="/admin/logout" class="inline"><button class="linkbtn">logout</button></form>` : ''}
+    ? `<a href="/admin/alerts" class="alertbadge${alertCount ? ' hot' : ''}" id="alertbadge">alerts (<span id="alertcount">${alertCount}</span>)</a> · ` : ''}<a href="/admin">${esc(L.nav_admin)}</a> · <form method="post" action="/admin/logout" class="inline"><button class="linkbtn">logout</button></form>` : ''}
   </span>
 </nav>
 ${announcement.trim() ? `<div class="announcement" data-hash="${esc(simpleHash(announcement))}">${esc(announcement)}
@@ -28,7 +29,7 @@ ${announcement.trim() ? `<div class="announcement" data-hash="${esc(simpleHash(a
 <div id="settings-panel" class="settings-panel" hidden></div>
 <div id="watcher" hidden><div class="w-head">Watched threads <a href="#" id="watcher-toggle">[–]</a></div><ul id="watcher-list"></ul></div>
 ${body}
-<footer>Powered by Yotsuba-IB${hasFaq ? ' · <a href="/faq">FAQ</a>' : ''}</footer>
+<footer>${esc(L.footer)}${hasFaq ? ' · <a href="/faq">FAQ</a>' : ''}</footer>
 <script src="/static/app.js" defer></script>
 ${alertCount !== null ? `<div id="toasts"></div>
 <script>
@@ -63,20 +64,6 @@ function simpleHash(s) {
   let h = 0;
   for (const c of String(s)) h = (h * 31 + c.charCodeAt(0)) | 0;
   return String(h >>> 0);
-}
-
-export function homePage(boards) {
-  const groups = new Map();
-  for (const b of boards) {
-    const key = b.category || '';
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(b);
-  }
-  const item = (b) => `<li><a href="/${esc(b.slug)}/">/${esc(b.slug)}/ - ${esc(b.title)}</a>${b.nsfw ? ' <small class="nsfw">NSFW</small>' : ''}${b.hidden ? ' <small class="hiddenboard">(hidden from users)</small>' : ''}
-    ${b.bio ? `<p>${esc(b.bio)}</p>` : ''}</li>`;
-  return `<header class="hero"><h1>Boards</h1></header>
-${boards.length ? [...groups].map(([cat, list]) => `${cat ? `<h2 class="category">${esc(cat)}</h2>` : ''}
-<ul class="boardlist">${list.map(item).join('\n')}</ul>`).join('\n') : '<ul class="boardlist"><li><em>No boards yet.</em></li></ul>'}`;
 }
 
 function fileBlock(p) {

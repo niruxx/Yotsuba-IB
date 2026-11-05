@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 300" width="1200" height="300" role="img" aria-label="Yotsuba-IB: self-hosted anonymous imageboard">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#eef2ff"/>
+      <stop offset="1" stop-color="#d6daf0"/>
+    </linearGradient>
+    <linearGradient id="leaf" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#5bbf6a"/>
+      <stop offset="1" stop-color="#117743"/>
+    </linearGradient>
+    <pattern id="dots" width="24" height="24" patternUnits="userSpaceOnUse">
+      <circle cx="2" cy="2" r="1.4" fill="#b7c5d9"/>
+    </pattern>
+  </defs>
+  <rect width="1200" height="300" rx="18" fill="url(#bg)"/>
+  <rect width="1200" height="300" rx="18" fill="url(#dots)" opacity=".6"/>
+  <rect x="1" y="1" width="1198" height="298" rx="17" fill="none" stroke="#b7c5d9" stroke-width="2"/>
+
+  <!-- four-leaf clover -->
+  <g transform="translate(190 150) rotate(-12)">
+    <path d="M0 0 C -12 60, 18 95, 30 120" stroke="#117743" stroke-width="9" fill="none" stroke-linecap="round"/>
+    <g fill="url(#leaf)" stroke="#0d5c34" stroke-width="3">
+      <path d="M0 -4 C -55 -60, -95 -10, -48 8 C -95 30, -55 75, 0 4 Z" transform="rotate(0)"/>
+      <path d="M0 -4 C -55 -60, -95 -10, -48 8 C -95 30, -55 75, 0 4 Z" transform="rotate(90)"/>
+      <path d="M0 -4 C -55 -60, -95 -10, -48 8 C -95 30, -55 75, 0 4 Z" transform="rotate(180)"/>
+      <path d="M0 -4 C -55 -60, -95 -10, -48 8 C -95 30, -55 75, 0 4 Z" transform="rotate(270)"/>
+    </g>
+    <circle r="9" fill="#e8f5e9" stroke="#0d5c34" stroke-width="3"/>
+  </g>
+
+  <text x="340" y="148" font-family="Tahoma, Verdana, 'DejaVu Sans', sans-serif" font-size="92" font-weight="bold" fill="#af0a0f" letter-spacing="-3">Yotsuba-IB</text>
+  <text x="344" y="196" font-family="Arial, Helvetica, 'DejaVu Sans', sans-serif" font-size="28" fill="#34345c">Self-hosted anonymous imageboard, ready in one command</text>
+  <g font-family="Arial, Helvetica, 'DejaVu Sans', sans-serif" font-size="19" fill="#117743">
+    <text x="344" y="242">&gt;threads · images &amp; video · moderation · staff roles · JSON API · Docker</text>
+  </g>
+</svg>
