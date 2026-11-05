@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - run: npm install --no-audit --no-fund
+      - run: npm test
+      - run: bash -n install.sh && bash -n update.sh && bash -n uninstall.sh
+
+  docker:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t yotsuba-ib:ci .
+      - name: Smoke test the image
+        run: |
+          docker run -d --name yib -p 8420:8420 -e YOTSUBA_ADMIN_USER=ci -e YOTSUBA_ADMIN_PASS=ci-password-123 yotsuba-ib:ci
+          for i in $(seq 1 30); do curl -fs http://127.0.0.1:8420/healthz && exit 0; sleep 1; done
+          docker logs yib; exit 1

@@ -1,17 +1,51 @@
 {
   "name": "yotsuba-ib",
   "version": "0.1.0",
-  "description": "Self-hosted anonymous imageboard server. One command, one admin, unlimited boards.",
+  "description": "Self-hosted anonymous imageboard: boards, threads, image/video uploads, moderation, staff roles. One command to run.",
   "type": "module",
-  "bin": { "yotsuba-ib": "bin/cli.js" },
+  "bin": {
+    "yotsuba-ib": "bin/cli.js"
+  },
   "main": "src/server.js",
-  "files": ["bin", "src", "public"],
-  "scripts": { "start": "node bin/cli.js" },
-  "engines": { "node": ">=22.13" },
-  "keywords": ["imageboard", "chan", "forum", "anonymous", "self-hosted"],
+  "files": [
+    "bin",
+    "src",
+    "public",
+    "README.md",
+    "ROADMAP.md"
+  ],
+  "scripts": {
+    "start": "node bin/cli.js",
+    "test": "node --test test/",
+    "prepublishOnly": "npm test"
+  },
+  "engines": {
+    "node": ">=22.13"
+  },
+  "keywords": [
+    "imageboard",
+    "chan",
+    "forum",
+    "anonymous",
+    "self-hosted",
+    "board"
+  ],
   "license": "MIT",
   "dependencies": {
     "express": "^5.1.0",
+    "maxmind": "^4.3.0",
     "multer": "^2.0.0"
-  }
+  },
+  "optionalDependencies": {
+    "sharp": "^0.35.5"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/niruxx/Yotsuba-IB.git"
+  },
+  "homepage": "https://github.com/niruxx/Yotsuba-IB#readme",
+  "bugs": {
+    "url": "https://github.com/niruxx/Yotsuba-IB/issues"
+  },
+  "author": "niruxx"
 }

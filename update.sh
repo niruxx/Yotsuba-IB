@@ -48,5 +48,10 @@ NEW_REV="$(git rev-parse --short HEAD)"
 c_info "Installing npm packages"
 npm install --omit=dev --no-audit --no-fund
 
+c_info "Refreshing GeoIP country database"
+SVC_USER="$(stat -c %U "$DATA_DIR")"
+runuser -u "$SVC_USER" -- "$(command -v node)" "$INSTALL_DIR/bin/cli.js" update-geoip --data "$DATA_DIR" \
+  || echo "GeoIP refresh failed (country bans keep using the previous database)."
+
 c_info "Updated $OLD_REV → $NEW_REV"
 git --no-pager log --oneline "$OLD_REV..$NEW_REV" 2>/dev/null | head -20 || true

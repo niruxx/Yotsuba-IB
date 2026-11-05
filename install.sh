@@ -43,14 +43,14 @@ node_ok() {
 }
 
 # ---------- install dependencies ----------
-c_info "Installing dependencies (git, curl, Node.js >= $NODE_MIN)"
+c_info "Installing dependencies (git, curl, ffmpeg, Node.js >= $NODE_MIN)"
 case $FAMILY in
   arch)
-    pacman -Sy --needed --noconfirm git curl nodejs npm ;;
+    pacman -Sy --needed --noconfirm git curl nodejs npm ffmpeg ;;
   debian)
     export DEBIAN_FRONTEND=noninteractive
     apt-get update -y
-    apt-get install -y git curl ca-certificates gnupg
+    apt-get install -y git curl ca-certificates gnupg ffmpeg
     if ! node_ok; then
       c_info "Adding NodeSource repository for Node.js $NODE_MAJOR"
       curl -fsSL "https://deb.nodesource.com/setup_${NODE_MAJOR}.x" | bash -
@@ -59,6 +59,8 @@ case $FAMILY in
   rhel)
     PM=dnf; command -v dnf >/dev/null || PM=yum
     $PM install -y git curl ca-certificates
+    $PM install -y ffmpeg-free 2>/dev/null || $PM install -y ffmpeg 2>/dev/null \
+      || c_warn "ffmpeg not available (enable RPM Fusion/EPEL for it); video thumbnails will be skipped."
     if ! node_ok; then
       $PM module reset -y nodejs >/dev/null 2>&1 || true
       $PM install -y "nodejs >= $NODE_MAJOR" >/dev/null 2>&1 || true
@@ -71,6 +73,8 @@ case $FAMILY in
   suse)
     zypper --non-interactive refresh
     zypper --non-interactive install git curl
+    zypper --non-interactive install ffmpeg 2>/dev/null || zypper --non-interactive install ffmpeg-7 2>/dev/null \
+      || c_warn "ffmpeg not available (add the Packman repo for it); video thumbnails will be skipped."
     node_ok || zypper --non-interactive install "nodejs${NODE_MAJOR}" "npm${NODE_MAJOR}" ;;
 esac
 node_ok || die "Node.js >= $NODE_MIN could not be installed automatically (found: $(node -v 2>/dev/null || echo none)). Install it manually and re-run."
@@ -122,10 +126,14 @@ EOF
 chmod 640 "$ENV_FILE"
 chgrp "$SERVICE_USER" "$ENV_FILE"
 
+c_info "Downloading the GeoIP country database (used for country bans)"
+sudo_as() { runuser -u "$SERVICE_USER" -- "$@" 2>/dev/null || su -s /bin/sh "$SERVICE_USER" -c "$(printf '%q ' "$@")"; }
+sudo_as "$NODE_BIN" "$INSTALL_DIR/bin/cli.js" update-geoip --data "$DATA_DIR" \
+  || c_warn "GeoIP download failed; country bans won't work until you run: $NODE_BIN $INSTALL_DIR/bin/cli.js update-geoip --data $DATA_DIR"
+
 # ---------- owner account ----------
 echo
 c_info "Create the owner account (full control of the site)"
-sudo_as() { runuser -u "$SERVICE_USER" -- "$@" 2>/dev/null || su -s /bin/sh "$SERVICE_USER" -c "$(printf '%q ' "$@")"; }
 sudo_as "$NODE_BIN" "$INSTALL_DIR/bin/cli.js" add-admin --data "$DATA_DIR"
 
 # ---------- systemd ----------

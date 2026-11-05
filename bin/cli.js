@@ -4,6 +4,8 @@ import readline from 'node:readline';
 import path from 'node:path';
 import { createServer } from '../src/server.js';
 import { openDb, adminCount, createAdmin, setPassword } from '../src/db.js';
+import { loadGeo, downloadGeoDb } from '../src/moderation.js';
+import { fullBackup, restoreBackup } from '../src/backup.js';
 
 const { values: a, positionals } = parseArgs({
   allowPositionals: true,
@@ -13,7 +15,6 @@ const { values: a, positionals } = parseArgs({
     data: { type: 'string', short: 'd', default: process.env.YOTSUBA_DATA || './yotsuba-data' },
     name: { type: 'string', default: process.env.YOTSUBA_NAME || 'Yotsuba-IB' },
     'max-file-mb': { type: 'string', default: '20' },
-    cooldown: { type: 'string', default: '15' },
     'trust-proxy': { type: 'boolean', default: false },
     help: { type: 'boolean', short: 'h' },
   },
@@ -26,6 +27,9 @@ Commands:
   (none)        Start the server (prompts for an admin account on first run)
   add-admin             Create a staff account with no permissions (grant them in /admin/accounts)
   reset-password <user> Set a new password for an account (e.g. a locked-out owner)
+  update-geoip          Download the free db-ip.com country database (for country bans; refresh monthly)
+  backup [file]         Full backup (database + uploads + banners) to a .tar.gz; safe while running
+  restore <file>        Restore a .tar.gz backup or .sqlite snapshot (stop the server first)
 
 Options:
   -p, --port <n>        Port to listen on (default 8420, env PORT)
@@ -33,7 +37,6 @@ Options:
   -d, --data <dir>      Data directory for database + uploads (default ./yotsuba-data)
       --name <text>     Site name shown in the header
       --max-file-mb <n> Upload size limit (default 20)
-      --cooldown <sec>  Seconds between posts per IP (default 15)
       --trust-proxy     Use X-Forwarded-For (enable behind nginx/Caddy)
 
 First-run admin can also be set non-interactively with
@@ -91,6 +94,27 @@ if (positionals[0] === 'add-admin') {
   db.prepare('UPDATE admins SET disabled = 0 WHERE id = ?').run(u.id);
   console.log('Password updated.');
   process.exit(0);
+} else if (positionals[0] === 'backup') {
+  const out = fullBackup(dataDir, positionals[1]);
+  console.log(`Backup written to ${out}`);
+  process.exit(0);
+} else if (positionals[0] === 'restore') {
+  if (!positionals[1]) { console.error('Usage: yotsuba-ib restore <backup.tar.gz | snapshot.sqlite>'); process.exit(1); }
+  const answer = process.stdin.isTTY ? await ask(`Replace the data in ${dataDir} with ${positionals[1]}? The server must be stopped. [y/N] `) : 'y';
+  if (!/^y/i.test(answer)) { console.log('Aborted.'); process.exit(1); }
+  const aside = restoreBackup(dataDir, positionals[1]);
+  console.log(`Restored. The previous data was moved to ${aside}`);
+  process.exit(0);
+} else if (positionals[0] === 'update-geoip') {
+  try {
+    const { url } = await downloadGeoDb(dataDir);
+    console.log(`GeoIP database updated from ${url}`);
+    console.log('IP geolocation by DB-IP (https://db-ip.com), licensed CC BY 4.0. Restart the server to load it.');
+    process.exit(0);
+  } catch (err) {
+    console.error(err.message);
+    process.exit(1);
+  }
 } else if (positionals.length) {
   console.error(`Unknown command: ${positionals[0]} (try --help)`);
   process.exit(1);
@@ -100,11 +124,13 @@ const setupDb = openDb(dataDir);
 if (adminCount(setupDb) === 0) await promptAdmin(setupDb, 'owner');
 setupDb.close();
 
+const geo = await loadGeo(dataDir);
+if (!geo) console.log('No GeoIP database found; country bans need `yotsuba-ib update-geoip` or a CDN country header.');
 const { app } = createServer({
   dataDir,
+  geo,
   siteName: a.name,
   maxFileMb: Number(a['max-file-mb']),
-  cooldownSec: Number(a.cooldown),
   trustProxy: a['trust-proxy'],
 });
 app.listen(Number(a.port), a.host, () => {

@@ -5,10 +5,13 @@ import fs from 'node:fs';
 
 // Permissions the owner can grant to staff accounts, one by one.
 export const PERMISSIONS = {
-  delete_posts: 'Delete posts and threads',
+  delete_posts: 'Delete posts/files, sticky, lock and move threads',
   view_logs: 'View post logs (IP addresses, uploads)',
   manage_boards: 'Create, edit and delete boards',
-  manage_settings: 'Change site settings (logging, retention)',
+  manage_settings: 'Change site settings (logging, retention, GeoIP)',
+  view_alerts: 'Receive keyword alerts and user reports (live notifications)',
+  manage_filters: 'Manage keyword alert/block rules',
+  manage_bans: 'Ban IPs, IP ranges, countries and files; handle ban appeals',
 };
 
 export const SETTING_DEFAULTS = {
@@ -16,6 +19,22 @@ export const SETTING_DEFAULTS = {
   thread_inactivity_days: '30', // purge threads not bumped for this long (0 = never)
   file_retention_days: '0',     // delete uploaded files older than this (0 = keep forever)
   log_retention_days: '90',     // delete post logs older than this (0 = keep forever)
+  geoip_header: '',             // trusted country header from a CDN, e.g. CF-IPCountry (needs --trust-proxy)
+  cooldown_thread_sec: '60',    // per IP, per board (boards can override)
+  cooldown_reply_sec: '15',     // per IP, per board (boards can override)
+  cooldown_upload_sec: '30',    // per IP, site-wide, for posts with a file
+  max_links: '3',               // max URLs in one post (0 = unlimited)
+  duplicate_window_min: '10',   // reject identical text posted again within N minutes, from any IP (0 = off)
+  board_flood_per_min: '30',    // max posts per board per minute across all IPs (0 = off)
+  phash_threshold: '8',         // banned-image similarity: max differing bits out of 64 (0 = exact pixels only)
+  archive_days: '7',            // pruned/inactive threads stay read-only in the archive this long (0 = delete immediately)
+  announcement: '',             // banner text shown at the top of every page
+  faq_text: '',                 // content of the /faq page (blank = no FAQ page)
+  backup_interval_hours: '24',  // automatic database snapshots (0 = off)
+  backup_keep: '14',            // how many automatic snapshots to keep
+  birthday_date: '',            // MM-DD: party hats on post images that day (blank = off)
+  birthday_hat: 'party',        // party | crown | wizard
+  birthday_color: '#e0457b',    // hat colour
 };
 
 export function openDb(dataDir) {
@@ -101,6 +120,117 @@ export function openDb(dataDir) {
       UPDATE admins SET role = 'owner' WHERE id = (SELECT MIN(id) FROM admins);
     `);
   }
+  const boardCols = db.prepare('PRAGMA table_info(boards)').all().map((c) => c.name);
+  if (!boardCols.includes('hidden')) db.exec('ALTER TABLE boards ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0');
+  const postCols = db.prepare('PRAGMA table_info(posts)').all().map((c) => c.name);
+  if (!postCols.includes('sticky')) {
+    db.exec(`
+      ALTER TABLE posts ADD COLUMN sticky INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE posts ADD COLUMN locked INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE posts ADD COLUMN file_sha256 TEXT;
+    `);
+  }
+  const addCol = (table, col, def) => {
+    if (!db.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === col)) {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${def}`);
+    }
+  };
+  addCol('posts', 'file_phash', 'TEXT');
+  addCol('posts', 'capcode', 'TEXT');
+  addCol('posts', 'delete_hash', 'TEXT');
+  addCol('boards', 'thread_cooldown', 'INTEGER');
+  addCol('boards', 'reply_cooldown', 'INTEGER');
+  addCol('sessions', 'csrf', 'TEXT');
+  addCol('posts', 'thumb', 'INTEGER NOT NULL DEFAULT 0');      // 1 = <file>.thumb.jpg exists
+  addCol('posts', 'spoiler', 'INTEGER NOT NULL DEFAULT 0');
+  addCol('posts', 'width', 'INTEGER');
+  addCol('posts', 'height', 'INTEGER');
+  addCol('posts', 'tripcode', 'TEXT');
+  addCol('posts', 'poster_id', 'TEXT');
+  addCol('posts', 'country', 'TEXT');
+  addCol('posts', 'sage', 'INTEGER NOT NULL DEFAULT 0');
+  addCol('posts', 'archived', 'INTEGER NOT NULL DEFAULT 0');
+  addCol('posts', 'archived_at', 'INTEGER');
+  addCol('boards', 'category', "TEXT NOT NULL DEFAULT ''");
+  addCol('boards', 'position', 'INTEGER NOT NULL DEFAULT 0');
+  addCol('boards', 'rules', "TEXT NOT NULL DEFAULT ''");
+  addCol('boards', 'poster_ids', 'INTEGER NOT NULL DEFAULT 0');
+  addCol('boards', 'country_flags', 'INTEGER NOT NULL DEFAULT 0');
+  // Per-board posting rules (NULL = site default where applicable)
+  addCol('boards', 'nsfw', 'INTEGER NOT NULL DEFAULT 0');
+  addCol('boards', 'max_file_mb', 'REAL');
+  addCol('boards', 'allowed_types', "TEXT NOT NULL DEFAULT ''");   // e.g. "jpg,png,webm" ('' = all)
+  addCol('boards', 'text_only', 'INTEGER NOT NULL DEFAULT 0');
+  addCol('boards', 'require_subject', 'INTEGER NOT NULL DEFAULT 0');
+  addCol('boards', 'bump_limit', 'INTEGER');
+  addCol('boards', 'image_limit', 'INTEGER');
+  addCol('boards', 'threads_per_page', 'INTEGER');
+  addCol('boards', 'forced_anon', 'INTEGER NOT NULL DEFAULT 0');
+  // Board-scoped staff: comma-separated board slugs ('' = all boards)
+  addCol('admins', 'boards', "TEXT NOT NULL DEFAULT ''");
+  db.exec(`CREATE TABLE IF NOT EXISTS banners (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    board TEXT NOT NULL REFERENCES boards(slug) ON DELETE CASCADE ON UPDATE CASCADE,
+    file TEXT NOT NULL,
+    mime TEXT NOT NULL,
+    created INTEGER NOT NULL
+  )`);
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS appeals (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ban_id INTEGER NOT NULL,
+      text TEXT NOT NULL,
+      ip TEXT,
+      status TEXT NOT NULL DEFAULT 'open',  -- 'open' | 'accepted' | 'denied'
+      response TEXT NOT NULL DEFAULT '',
+      handled_by TEXT,
+      handled_at INTEGER,
+      created INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS bans (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      kind TEXT NOT NULL,              -- 'ip' | 'range' | 'country'
+      value TEXT NOT NULL,             -- 1.2.3.4 | 1.2.3.0/24 | DE
+      scope TEXT NOT NULL,             -- 'post' (can read, can't post) | 'access' (can't view the site)
+      reason TEXT NOT NULL,
+      post_id INTEGER,
+      created_by TEXT NOT NULL,
+      created INTEGER NOT NULL,
+      expires INTEGER,                 -- NULL = permanent
+      lifted INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE TABLE IF NOT EXISTS filters (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      pattern TEXT NOT NULL,
+      is_regex INTEGER NOT NULL DEFAULT 0,
+      action TEXT NOT NULL,            -- 'alert' (post goes through, staff notified) | 'block' (post rejected, staff notified)
+      note TEXT NOT NULL DEFAULT '',
+      created_by TEXT NOT NULL,
+      created INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS alerts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      kind TEXT NOT NULL,              -- 'keyword' | 'blocked' | 'report'
+      post_id INTEGER,
+      board TEXT,
+      thread_id INTEGER,
+      detail TEXT NOT NULL DEFAULT '', -- matched rules or report reason
+      excerpt TEXT NOT NULL DEFAULT '',
+      ip TEXT,
+      status TEXT NOT NULL DEFAULT 'open',
+      handled_by TEXT,
+      handled_at INTEGER,
+      created INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_alerts_status ON alerts(status, id);
+    CREATE TABLE IF NOT EXISTS file_bans (
+      sha256 TEXT PRIMARY KEY,
+      reason TEXT NOT NULL,
+      created_by TEXT NOT NULL,
+      created INTEGER NOT NULL
+    );
+  `);
+  addCol('file_bans', 'phash', 'TEXT');
   return db;
 }
 
@@ -135,11 +265,17 @@ export function parsePerms(str) {
   return String(str || '').split(',').filter((p) => p in PERMISSIONS);
 }
 
-export function can(admin, perm) {
+// can(admin, perm) - has the permission anywhere.
+// can(admin, perm, board) - has it for that board (staff can be limited to specific boards).
+export function can(admin, perm, board) {
   if (!admin) return false;
   if (admin.role === 'owner') return true;
-  return admin.perms?.includes(perm) ?? false;
+  if (!admin.perms?.includes(perm)) return false;
+  if (board && admin.boardList?.length && !admin.boardList.includes(board)) return false;
+  return true;
 }
+
+export const parseBoards = (str) => String(str || '').split(',').map((b) => b.trim()).filter(Boolean);
 
 export function getSettings(db) {
   const out = { ...SETTING_DEFAULTS };
@@ -150,4 +286,14 @@ export function getSettings(db) {
 export function setSetting(db, key, value) {
   db.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
     .run(key, String(value));
+}
+
+// Persistent server secret (tripcodes, poster IDs). Generated once and stored in settings.
+export function serverSecret(db) {
+  let v = db.prepare("SELECT value FROM settings WHERE key = 'server_secret'").get()?.value;
+  if (!v) {
+    v = crypto.randomBytes(32).toString('hex');
+    db.prepare("INSERT INTO settings (key, value) VALUES ('server_secret', ?)").run(v);
+  }
+  return v;
 }

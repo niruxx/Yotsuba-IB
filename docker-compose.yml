@@ -1,0 +1,23 @@
+# Usage:
+#   1. Set YOTSUBA_ADMIN_USER / YOTSUBA_ADMIN_PASS below (only used on first start to create the owner).
+#   2. docker compose up -d
+#   3. Optional: docker compose exec yotsuba node bin/cli.js update-geoip   (then restart, for country bans)
+services:
+  yotsuba:
+    build: .
+    image: yotsuba-ib:latest
+    restart: unless-stopped
+    ports:
+      - "8420:8420"
+    volumes:
+      - yotsuba-data:/data
+    environment:
+      YOTSUBA_NAME: "Yotsuba-IB"
+      YOTSUBA_ADMIN_USER: "owner"
+      YOTSUBA_ADMIN_PASS: "change-me-please"
+      # YOTSUBA_METRICS_TOKEN: "a-long-random-token"   # enables /metrics for Prometheus
+    # Behind a reverse proxy, add --trust-proxy:
+    # command: ["--trust-proxy"]
+
+volumes:
+  yotsuba-data:
