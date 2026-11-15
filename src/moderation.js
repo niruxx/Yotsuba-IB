@@ -307,6 +307,7 @@ export function registerModeration(app, ctx) {
     if (!can(req.admin, 'delete_posts', op.board) || !can(req.admin, 'delete_posts', target.slug)) {
       return fail(req, res, 'You must moderate both boards to move this thread.', 403);
     }
+    ctx.storage.moveThread(op, target.slug);
     db.prepare('UPDATE posts SET board = ? WHERE id = ? OR thread_id = ?').run(target.slug, op.id, op.id);
     db.prepare('UPDATE post_logs SET board = ? WHERE thread_id = ?').run(target.slug, op.id);
     audit(req, 'move_thread', `No.${op.id} /${op.board}/ → /${target.slug}/${op.subject ? ` [${op.subject}]` : ''}`);

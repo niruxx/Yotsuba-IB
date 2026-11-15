@@ -1,3 +1,5 @@
+import { BOARD_TEMPLATES } from './templates.js';
+import { DEFAULT_HOMEPAGE } from './homepage.js';
 import crypto from 'node:crypto';
 import {
   PERMISSIONS, SETTING_DEFAULTS, can, parsePerms, verifyPassword, createAdmin, setPassword,
@@ -136,6 +138,30 @@ export function registerAdmin(app, ctx) {
       .map((b) => ({ ...b, banners: banners.filter((bn) => bn.board === b.slug) }));
     render(req, res, 'Boards', A.boardsPage(req.admin, boards, req.query.msg));
   });
+  app.post('/admin/templates', requireOwner, (req, res) => {
+    const template = Object.hasOwn(BOARD_TEMPLATES, String(req.body.template)) ? BOARD_TEMPLATES[String(req.body.template)] : null;
+    if (!template) return fail(req, res, 'Unknown template.');
+    const replace = req.body.mode === 'replace';
+    if (replace && req.body.confirm_replace !== 'REPLACE') return fail(req, res, 'Type REPLACE to confirm removal of all boards and posts and reset site settings.');
+    for (const [slug] of template.boards) ctx.storage.boardDir(slug);
+    if (replace) {
+      for (const { id } of db.prepare('SELECT id FROM posts WHERE thread_id IS NULL').all()) deletePost(id);
+    }
+    db.exec('BEGIN');
+    try {
+      if (replace) {
+        db.exec('DELETE FROM boards');
+        // Preserve cryptographic identity; accounts, bans and audit evidence remain intact.
+        db.prepare("DELETE FROM settings WHERE key != 'server_secret'").run();
+        setSetting(db, 'homepage', JSON.stringify({ ...DEFAULT_HOMEPAGE, layout: template.layout }));
+      }
+      const insert = db.prepare('INSERT OR IGNORE INTO boards (slug, title, bio, category, position, created) VALUES (?, ?, ?, ?, ?, ?)');
+      template.boards.forEach(([slug, title, category], i) => insert.run(slug, title, title + ' discussion', category, i, Date.now()));
+      db.exec('COMMIT');
+    } catch (err) { db.exec('ROLLBACK'); throw err; }
+    audit(req, 'apply_template', `${req.body.template}: ${replace ? 'replace boards and reset settings' : 'merge missing boards; keep layout and existing boards'}`);
+    back(res, '/admin/boards', 'Template applied.');
+  });
   app.post('/admin/boards', requirePerm('manage_boards'), (req, res) => {
     const slug = String(req.body.slug || '').trim().toLowerCase();
     const title = String(req.body.title || '').trim().slice(0, 60);
@@ -149,6 +175,7 @@ export function registerAdmin(app, ctx) {
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(slug, title, bio, hidden, optSeconds(req.body.thread_cooldown), optSeconds(req.body.reply_cooldown),
         x.category, x.position, x.rules, x.poster_ids, x.country_flags, Date.now());
+    ctx.storage.boardDir(slug);
     saveExtras(slug, req.body, x);
     audit(req, 'create_board', `/${slug}/ "${title}"${hidden ? ' (hidden)' : ''}`);
     back(res, '/admin/boards', `Created /${slug}/`);
@@ -217,6 +244,7 @@ export function registerAdmin(app, ctx) {
     render(req, res, 'Settings', A.settingsPage(req.admin, getSettings(db), req.query.msg)));
   app.post('/admin/settings', requirePerm('manage_settings'), (req, res) => {
     const before = getSettings(db);
+    if (!req.body.logging_enabled && req.body.confirm_disable_logging !== '1') return fail(req, res, 'Disabling logging means no log.out files and no uploader IP/name oversight for new posts. Acknowledge the warning first.');
     const next = { logging_enabled: req.body.logging_enabled ? '1' : '0' };
     for (const key of ['thread_inactivity_days', 'file_retention_days', 'log_retention_days', 'cooldown_thread_sec',
       'cooldown_reply_sec', 'cooldown_upload_sec', 'max_links', 'duplicate_window_min', 'board_flood_per_min', 'phash_threshold',
@@ -234,6 +262,9 @@ export function registerAdmin(app, ctx) {
     next.announcement = String(req.body.announcement || '').trim().slice(0, 1000);
     next.faq_text = String(req.body.faq_text || '').replace(/\r\n/g, '\n').trim().slice(0, 20000);
     next.geoip_header = String(req.body.geoip_header || '').trim().replace(/[^A-Za-z0-9-]/g, '').slice(0, 64);
+    next.log_directory = String(req.body.log_directory ?? before.log_directory).trim();
+    try { ctx.storage.configureLogs(before.log_directory, next.log_directory, req.body.move_logs === 'on'); }
+    catch (err) { return fail(req, res, `Cannot configure log storage: ${err.message}`); }
     const changes = [];
     for (const [k, v] of Object.entries(next)) {
       if (before[k] !== v) { setSetting(db, k, v); changes.push(`${k}: ${before[k]} → ${v}`); }

@@ -261,14 +261,21 @@ Staff start with **no permissions**:
 
 ### 🗄️ Upload storage
 
-Files are stored per thread, so staff with server access can see who uploaded what:
+Boards have private directories under the data directory. Existing uploads migrate automatically at startup; public media URLs remain unchanged.
 
 ```
-uploads/threads/<threadId>-<subject>.<OP's IP>/post-image-<IP>.<ext>
-uploads/threads/<threadId>-<subject>.<OP's IP>/<postId>.imagefile.<IP>.<ext>
+boards/g/threads/123/123.json              # thread post
+boards/g/threads/123/124.json              # reply
+boards/g/threads/123/124.png               # uploaded image
+boards/g/threads/123/124.json.log.out      # uploader name and IP
+boards/g/threads/123/124.png.log.out       # matching upload log
 ```
 
-🔒 This folder is **never served directly**. Visitors get files from `/media/<postId>.<ext>`, which never reveals the path. When post logging is off, `nolog` is written instead of the IP.
+These directories are never served directly. Media is served by post ID through `/media/`.
+
+In **Admin > Settings**, post logging controls both database logs and `.log.out` files. Disabling it requires acknowledging that new posts will have no uploader oversight. Existing evidence is retained until log retention expires. Choose a private **log directory** (absolute or relative to the data directory) to store new logs elsewhere, and select **Move existing logs** to relocate current sidecars with their board/thread structure. External logs need separate backups; full backups include `boards`, while automatic snapshots include only SQLite. Logs left in previous locations without moving them must be managed separately.
+
+In **Admin > Boards**, the owner can apply **4chan-style** or **8kun-style** curated starter templates. Merge adds missing boards while preserving the current homepage, board settings and posts. Replacement requires typing `REPLACE`, removes all existing boards and posts, resets site settings and applies the corresponding homepage design. Accounts, bans, server secret and moderation evidence remain. Templates are local starter sets, not live imports or exhaustive copies of those sites.
 
 ---
 

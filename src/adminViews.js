@@ -1,3 +1,4 @@
+import { BOARD_TEMPLATES } from './templates.js';
 import { esc, fmtDate, fmtSize, mediaUrl } from './format.js';
 import { PERMISSIONS, can } from './db.js';
 
@@ -45,6 +46,14 @@ export function dashboard(a, stats, msg) {
 
 export function boardsPage(a, boards, msg) {
   return page(a, 'Boards', msg, `<section class="box">
+  ${a.role === 'owner' ? `<h2>Board templates</h2>
+  <form method="post" action="/admin/templates">
+  <label>Template <select name="template">${Object.entries(BOARD_TEMPLATES).map(([key, t]) => `<option value="${key}">${esc(t.title)} (${t.boards.length} boards)</option>`).join('')}</select></label>
+  <p>Curated starter board sets, not live imports. Merge adds missing boards to your existing layout and preserves existing board settings and posts.</p>
+  <label>Import mode <select name="mode"><option value="merge">Merge into existing layout</option><option value="replace">Overwrite all site settings and replace all boards</option></select></label>
+  <p><strong>Replacement permanently removes every existing board and post and resets site settings and homepage design. Accounts, bans and moderation evidence are retained.</strong></p>
+  <label>Type REPLACE for replacement <input name="confirm_replace" autocomplete="off"></label>
+  <button>Apply template</button></form>` : ''}
   <h2>Create board</h2>
   <form method="post" action="/admin/boards">
     <label>Slug <input name="slug" required pattern="[a-z0-9]{1,16}" placeholder="g"> <small>lowercase letters/numbers, becomes /slug/</small></label>
@@ -133,6 +142,10 @@ export function settingsPage(a, s, msg) {
   return page(a, 'Settings', msg, `<form class="box" method="post" action="/admin/settings">
   <label class="check"><input type="checkbox" name="logging_enabled" ${s.logging_enabled === '1' ? 'checked' : ''}>
     Post logging: record the IP address, user agent, content and upload of every new thread and reply</label>
+  <p><strong>Warning:</strong> Disabling logging stops creation of log.out files and recording uploader IP addresses and names. You will have no uploader oversight or details for new posts. Existing logs remain until retention expires.</p>
+  <label class="check"><input type="checkbox" name="confirm_disable_logging" value="1"> I understand the loss of uploader oversight when disabling logging</label>
+  <label>Private log directory <input name="log_directory" value="${esc(s.log_directory)}" placeholder="blank: alongside posts"> <small>Absolute path or relative to the data directory. Must be private and writable. New logs use this location.</small></label>
+  <label class="check"><input type="checkbox" name="move_logs"> Move existing log.out files from the current location to this directory</label>
   ${num('thread_inactivity_days', 'Purge inactive threads after (days)', 'Threads with no replies/bumps for this long are deleted. 0 = never.')}
   ${num('file_retention_days', 'Keep uploaded files for (days)', 'Files older than this are deleted; the post text stays. 0 = forever.')}
   ${num('log_retention_days', 'Keep post logs for (days)', '0 = forever.')}

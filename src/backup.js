@@ -35,7 +35,7 @@ export function fullBackup(dataDir, outFile) {
     db.close();
     const out = path.resolve(outFile || path.join(dataDir, 'backups', `full-${stamp()}.tar.gz`));
     fs.mkdirSync(path.dirname(out), { recursive: true });
-    const extras = ['uploads', 'banners', 'geoip'].filter((d) => fs.existsSync(path.join(dataDir, d)));
+    const extras = ['uploads', 'boards', 'banners', 'geoip'].filter((d) => fs.existsSync(path.join(dataDir, d)));
     execFileSync('tar', ['-czf', out, '-C', work, 'yotsuba.sqlite', '-C', dataDir, ...extras], { stdio: 'inherit' });
     return out;
   } finally {
@@ -53,7 +53,7 @@ export function restoreBackup(dataDir, file) {
   const aside = path.join(dataDir, `pre-restore-${stamp()}`);
   fs.mkdirSync(aside, { recursive: true });
   const isTar = /\.t(ar\.)?gz$/.test(src);
-  const moving = isTar ? ['yotsuba.sqlite', 'yotsuba.sqlite-wal', 'yotsuba.sqlite-shm', 'uploads', 'banners', 'geoip']
+  const moving = isTar ? ['yotsuba.sqlite', 'yotsuba.sqlite-wal', 'yotsuba.sqlite-shm', 'uploads', 'boards', 'banners', 'geoip']
     : ['yotsuba.sqlite', 'yotsuba.sqlite-wal', 'yotsuba.sqlite-shm'];
   for (const name of moving) {
     const p = path.join(dataDir, name);

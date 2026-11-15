@@ -21,8 +21,9 @@ before(async () => {
   base = `http://127.0.0.1:${server.address().port}`;
 });
 
-after(() => {
-  server.close();
+after(async () => {
+  await new Promise((resolve) => server.close(resolve));
+  db.close();
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -187,7 +188,7 @@ test('NSFW ratings, customized warnings and per-board confirmation', async () =>
   assert.equal(other.status, 302);
   assert.equal(db.prepare('SELECT nsfw FROM boards WHERE slug = ?').get('adult2').nsfw, 1);
   const saved = await staffPost('/admin/settings', {
-    nsfw_warning_title: 'Sensitive content', nsfw_warning_text: 'Think before entering <script>alert(1)</script>',
+    logging_enabled: 'on', nsfw_warning_title: 'Sensitive content', nsfw_warning_text: 'Think before entering <script>alert(1)</script>',
   });
   assert.equal(saved.status, 302);
   assert.equal(db.prepare("SELECT value FROM settings WHERE key = 'nsfw_warning_title'").get().value, 'Sensitive content');
@@ -218,4 +219,41 @@ test('NSFW ratings, customized warnings and per-board confirmation', async () =>
   await staffPost('/admin/boards/adult', { action: 'save', title: 'Adult', visible: 'on', nsfw: '0' });
   assert.equal(db.prepare('SELECT nsfw FROM boards WHERE slug = ?').get('adult').nsfw, 0);
   assert.doesNotMatch(await (await fetch(base + '/adult/')).text(), /Continue to board/);
+});
+
+
+test('private board files, log relocation, logging warning and templates', async () => {
+  const post = db.prepare('SELECT * FROM posts WHERE board = ? AND file IS NOT NULL LIMIT 1').get('g');
+  const threadDir = path.join(dir, 'boards', 'g', 'threads', String(post.thread_id || post.id));
+  assert.ok(fs.existsSync(path.join(threadDir, `${post.id}.json`)));
+  const log = JSON.parse(fs.readFileSync(path.join(threadDir, `${post.id}.json.log.out`), 'utf8'));
+  assert.equal(log.name, post.name);
+  assert.ok(log.ip.includes('127.0.0.1'));
+  assert.equal((await get(`/media/${post.id}.png`)).status, 200);
+  assert.equal((await get(`/boards/g/threads/${post.id}/${post.id}.json.log.out`)).status, 404);
+  const moved = await staffPost('/admin/settings', { logging_enabled: 'on', log_directory: 'private-logs', move_logs: 'on' });
+  assert.equal(moved.status, 302);
+  assert.ok(fs.existsSync(path.join(dir, 'private-logs', 'g', 'threads', String(post.thread_id || post.id), `${post.id}.json.log.out`)));
+  assert.ok(!fs.existsSync(path.join(threadDir, `${post.id}.json.log.out`)));
+  assert.equal((await staffPost('/admin/settings', {})).status, 400);
+  assert.equal((await staffPost('/admin/settings', { confirm_disable_logging: '1', log_directory: 'private-logs' })).status, 302);
+  for (const ban of db.prepare('SELECT id FROM bans WHERE lifted = 0').all()) await staffPost(`/admin/bans/${ban.id}/lift`, {});
+  setSetting(db, 'cooldown_reply_sec', '0');
+  const response = await anonPost('g', { thread: String(post.thread_id || post.id), body: 'Logging disabled verification', name: 'Tester' });
+  assert.equal(response.status, 302);
+  const latest = db.prepare('SELECT * FROM posts ORDER BY id DESC LIMIT 1').get();
+  assert.ok(fs.existsSync(path.join(threadDir, `${latest.id}.json`)));
+  assert.ok(!fs.existsSync(path.join(dir, 'private-logs', 'g', 'threads', String(post.thread_id || post.id), `${latest.id}.json.log.out`)));
+  const homepage = db.prepare("SELECT value FROM settings WHERE key = 'homepage'").get().value;
+  assert.equal((await staffPost('/admin/templates', { template: '4chan', mode: 'merge' })).status, 302);
+  assert.equal(db.prepare('SELECT bio FROM boards WHERE slug = ?').get('g').bio, 'tech talk');
+  assert.equal(db.prepare("SELECT value FROM settings WHERE key = 'homepage'").get().value, homepage);
+  assert.ok(fs.existsSync(path.join(dir, 'boards', 'sci')));
+  assert.equal((await staffPost('/admin/templates', { template: '8kun', mode: 'replace' })).status, 400);
+  assert.ok(db.prepare('SELECT id FROM posts WHERE id = ?').get(post.id));
+  assert.equal((await staffPost('/admin/templates', { template: '8kun', mode: 'replace', confirm_replace: 'REPLACE' })).status, 302);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM posts').get().n, 0);
+  assert.equal(db.prepare('SELECT slug FROM boards WHERE slug = ?').get('g'), undefined);
+  assert.ok(db.prepare('SELECT slug FROM boards WHERE slug = ?').get('tech'));
+  assert.ok(db.prepare('SELECT id FROM admins WHERE role = ?').get('owner'));
 });

@@ -1,3 +1,4 @@
+import { createBoardStorage } from './storage.js';
 import express from 'express';
 import multer from 'multer';
 import crypto from 'node:crypto';
@@ -39,6 +40,7 @@ export function createServer(opts) {
     maxPages = 10, bumpLimit = 300, trustProxy = false, geo = null,
   } = opts;
   const db = openDb(dataDir);
+  const storage = createBoardStorage(dataDir, db);
   const mod = createModeration({ db, geo, trustProxy });
   const lastReport = new Map();
   const uploadDir = path.join(dataDir, 'uploads');
@@ -143,28 +145,16 @@ export function createServer(opts) {
     fs.rm(thumbPath(path.join(uploadDir, file)), { force: true }, () => {});
   };
 
-  // On-disk layout (never served directly; files are served via /media/<postId>.<ext>):
-  //   uploads/threads/<threadId>-<subject>.<op IP>/post-image-<IP>.<ext>        (the OP's file)
-  //   uploads/threads/<threadId>-<subject>.<op IP>/<postId>.imagefile.<IP>.<ext> (reply files)
-  // When post logging is off, "nolog" is written instead of the IP.
-  const threadsDir = path.join(uploadDir, 'threads');
-  fs.mkdirSync(threadsDir, { recursive: true });
-  const safeIp = (ip) => String(ip || 'unknown').replace(/^::ffff:/, '').replace(/[^0-9A-Za-z.]/g, '_');
-  const slugify = (text) => String(text).toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '').slice(0, 40) || 'thread';
-  const findThreadDir = (threadId) =>
-    fs.readdirSync(threadsDir).find((d) => d.startsWith(`${threadId}-`));
-
+  // Private per-board storage; SQLite remains authoritative for rendering.
   function deletePost(id) {
-    const p = db.prepare('SELECT id, thread_id FROM posts WHERE id = ?').get(id);
+    const p = db.prepare('SELECT id, board, thread_id FROM posts WHERE id = ?').get(id);
     if (!p) return;
     const files = db.prepare('SELECT file FROM posts WHERE (id = ? OR thread_id = ?) AND file IS NOT NULL').all(id, id);
     db.prepare('DELETE FROM posts WHERE id = ?').run(id);
     for (const { file } of files) rmUpload(file);
-    if (!p.thread_id) {
-      const dir = findThreadDir(id);
-      if (dir) fs.rm(path.join(threadsDir, dir), { recursive: true, force: true }, () => {});
-    }
+    const snapshots = p.thread_id ? [id] : fs.readdirSync(storage.threadDir(p.board, p.id)).filter((f) => /^\d+\.json$/.test(f)).map((f) => parseInt(f, 10));
+    for (const postId of snapshots) fs.rmSync(path.join(storage.threadDir(p.board, p.thread_id || p.id), `${postId}.json`), { force: true });
+
   }
 
   // Pruned and inactive threads go to the read-only archive (or are deleted if archiving is off).
@@ -202,7 +192,10 @@ export function createServer(opts) {
       const clear = db.prepare('UPDATE posts SET file = NULL WHERE id = ?');
       for (const { id, file } of old) { clear.run(id); rmUpload(file); }
     }
-    if (logDays > 0) db.prepare('DELETE FROM post_logs WHERE created < ?').run(now - logDays * DAY);
+    if (logDays > 0) {
+      db.prepare('DELETE FROM post_logs WHERE created < ?').run(now - logDays * DAY);
+      storage.purgeLogs(s.log_directory, now - logDays * DAY);
+    }
   }
 
   const upload = multer({
@@ -218,8 +211,7 @@ export function createServer(opts) {
     const p = db.prepare(`SELECT p.file, p.thumb, b.hidden FROM posts p JOIN boards b ON b.slug = p.board
                           WHERE p.id = ? AND p.file IS NOT NULL`).get(parseInt(req.params.name, 10));
     if (!p || !p.thumb || (p.hidden && !req.admin)) return next();
-    res.sendFile(thumbPath(p.file), {
-      root: uploadDir,
+    res.sendFile(thumbPath(path.resolve(uploadDir, p.file)), {
       headers: { 'Content-Type': 'image/jpeg', 'Cache-Control': p.hidden ? 'private, no-store' : 'public, max-age=2592000' },
     }, (err) => err && !res.headersSent && next());
   });
@@ -228,8 +220,7 @@ export function createServer(opts) {
     const p = db.prepare(`SELECT p.file, p.file_mime, b.hidden FROM posts p JOIN boards b ON b.slug = p.board
                           WHERE p.id = ? AND p.file IS NOT NULL`).get(id);
     if (!p || (p.hidden && !req.admin)) return next();
-    res.sendFile(p.file, {
-      root: uploadDir,
+    res.sendFile(path.resolve(uploadDir, p.file), {
       headers: { 'Content-Type': p.file_mime, 'Cache-Control': p.hidden ? 'private, no-store' : 'public, max-age=2592000' },
     }, (err) => err && !res.headersSent && next());
   });
@@ -263,8 +254,8 @@ export function createServer(opts) {
     render(req, res, q ? `Search: ${q}` : 'Search', V.searchPage(q, boardSlug, results, listBoards(req)));
   });
 
-  const { audit } = registerAdmin(app, { db, render, fail, deletePost, uploadDir, getBoard, RESERVED, runPurge });
-  registerModeration(app, { db, render, fail, deletePost, mod, audit, rmUpload, uploadDir });
+  const { audit } = registerAdmin(app, { db, render, fail, deletePost, uploadDir, getBoard, RESERVED, runPurge, storage });
+  registerModeration(app, { db, render, fail, deletePost, mod, audit, rmUpload, uploadDir, storage });
   registerApi(app, { db, getVisibleBoard, listBoards, thumbPath });
   registerHomepage(app, { db, dataDir, render, fail, audit, csrfOk, views: HV });
 
@@ -595,18 +586,18 @@ export function createServer(opts) {
 
     let file = null;
     if (req.file) {
-      const ipTag = logging ? safeIp(req.ip) : 'nolog';
       const tid = thread?.id ?? id;
-      let dir = thread ? findThreadDir(tid) : null;
-      if (!dir) dir = `${tid}-${slugify(subject || body.split('\n')[0] || 'thread')}.${ipTag}`;
-      fs.mkdirSync(path.join(threadsDir, dir), { recursive: true });
-      const fname = thread ? `${id}.imagefile.${ipTag}.${ext}` : `post-image-${ipTag}.${ext}`;
-      file = path.posix.join('threads', dir, fname);
+      const dir = storage.threadDir(board.slug, tid);
+      fs.mkdirSync(dir, { recursive: true });
+      const fname = `${id}.${ext}`;
+      file = path.relative(uploadDir, path.join(dir, fname)).split(path.sep).join('/');
       // Strips EXIF/GPS and video metadata, records dimensions, writes a thumbnail.
       const media = await storeMedia(req.file.path, path.join(uploadDir, file), mime);
       db.prepare('UPDATE posts SET file = ?, file_sha256 = ?, width = ?, height = ?, thumb = ? WHERE id = ?')
         .run(file, fileSha, media.width, media.height, media.thumb ? 1 : 0, id);
     }
+
+    storage.writePost(db.prepare('SELECT * FROM posts WHERE id = ?').get(id), normIp(req.ip), settings);
 
     if (matches.length) {
       mod.createAlert({ kind: 'keyword', post_id: id, board: board.slug, thread_id: thread?.id ?? id, detail: describe(matches), excerpt, ip: loggedIp });

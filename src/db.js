@@ -15,6 +15,7 @@ export const PERMISSIONS = {
 };
 
 export const SETTING_DEFAULTS = {
+  log_directory: '',         // blank = private per-board directories
   logging_enabled: '1',        // record raw IP + content of every post
   thread_inactivity_days: '30', // purge threads not bumped for this long (0 = never)
   file_retention_days: '0',     // delete uploaded files older than this (0 = keep forever)
