@@ -1,5 +1,5 @@
 # Yotsuba-IB container image
-FROM node:22-bookworm-slim
+FROM node:26-bookworm-slim
 
 # ffmpeg: video thumbnails + metadata stripping. tini: proper signal handling.
 RUN apt-get update \
