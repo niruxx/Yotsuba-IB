@@ -5,6 +5,10 @@ import fs from 'node:fs';
 
 // Permissions the owner can grant to staff accounts, one by one.
 export const PERMISSIONS = {
+  create_boards: 'Create and own boards',
+  edit_board: 'Edit a board title, rules, posting settings and banners',
+  delete_board: 'Delete an assigned board and its posts',
+  manage_members: 'Manage moderators and their permissions on owned boards',
   delete_posts: 'Delete posts/files, sticky, lock and move threads',
   view_logs: 'View post logs (IP addresses, uploads)',
   manage_boards: 'Create, edit and delete boards',
@@ -15,6 +19,23 @@ export const PERMISSIONS = {
 };
 
 export const SETTING_DEFAULTS = {
+  video_embeds_enabled: '1',
+  trending_enabled: '1',
+  trending_sfw_only: '1',
+  webring_enabled: '0',
+  webring_url: '',
+  webring_peers: '[]',
+  dnsbl_enabled: '0',
+  dnsbl_lists: '',
+  dnsbl_failure: 'allow',
+  dnsbl_check_tor: '0',
+  tor_mode: 'allow',
+  tor_extra_exits: '',
+  tor_post_cooldown_sec: '30',
+  tor_exit_cooldown_sec: '3',
+  user_registration: '0',
+  user_board_creation: '0',
+  max_owned_boards: '3',
   captcha_enabled: '0',
   max_files_per_post: '4',
   log_directory: '',         // blank = private per-board directories
@@ -251,6 +272,30 @@ export function openDb(dataDir) {
     created INTEGER NOT NULL
   ); CREATE INDEX IF NOT EXISTS idx_attachments_post ON attachments(post_id);`);
 
+  addCol('boards', 'theme', "TEXT NOT NULL DEFAULT ''");
+  addCol('admins', 'display_name', "TEXT NOT NULL DEFAULT ''");
+  addCol('admins', 'donor', 'INTEGER NOT NULL DEFAULT 0');
+  addCol('admins', 'donor_label', "TEXT NOT NULL DEFAULT 'Donor'");
+  addCol('posts', 'user_id', 'INTEGER REFERENCES admins(id) ON DELETE SET NULL');
+  addCol('posts', 'account_badge', 'TEXT');
+  addCol('posts', 'account_verified', 'INTEGER NOT NULL DEFAULT 0');
+  db.exec(`CREATE TABLE IF NOT EXISTS board_members (
+    board TEXT NOT NULL REFERENCES boards(slug) ON DELETE CASCADE,
+    admin_id INTEGER NOT NULL REFERENCES admins(id) ON DELETE CASCADE,
+    role TEXT NOT NULL CHECK (role IN ('owner', 'moderator')),
+    permissions TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (board, admin_id)
+  ); CREATE INDEX IF NOT EXISTS idx_board_members_account ON board_members(admin_id);`);
+  db.exec('CREATE INDEX IF NOT EXISTS idx_posts_activity ON posts(board, created)');
+  addCol('boards', 'embed_videos', 'INTEGER NOT NULL DEFAULT 1');
+  addCol('boards', 'tor_mode', "TEXT NOT NULL DEFAULT 'inherit'");
+  addCol('posts', 'is_tor', 'INTEGER NOT NULL DEFAULT 0');
+  addCol('post_logs', 'is_tor', 'INTEGER NOT NULL DEFAULT 0');
+  db.exec(`CREATE TABLE IF NOT EXISTS favorites (
+    admin_id INTEGER NOT NULL REFERENCES admins(id) ON DELETE CASCADE,
+    board TEXT NOT NULL REFERENCES boards(slug) ON DELETE CASCADE,
+    PRIMARY KEY (admin_id, board)
+  )`);
   return db;
 }
 
@@ -282,17 +327,44 @@ export function setPassword(db, adminId, password) {
 }
 
 export function parsePerms(str) {
-  return String(str || '').split(',').filter((p) => p in PERMISSIONS);
+  return String(str || '').split(',').filter((p) => Object.hasOwn(PERMISSIONS, p));
 }
 
-// can(admin, perm) - has the permission anywhere.
-// can(admin, perm, board) - has it for that board (staff can be limited to specific boards).
-export function can(admin, perm, board) {
-  if (!admin) return false;
-  if (admin.role === 'owner') return true;
-  if (!admin.perms?.includes(perm)) return false;
-  if (board && admin.boardList?.length && !admin.boardList.includes(board)) return false;
-  return true;
+export const BOARD_PERMISSIONS = ['manage_boards', 'edit_board', 'delete_board', 'manage_members', 'delete_posts', 'view_logs', 'view_alerts', 'manage_bans'];
+export function hydrateAccount(db, account) {
+  const memberships = db.prepare('SELECT board, role, permissions FROM board_members WHERE admin_id = ?').all(account.id)
+    .map((row) => ({ ...row, perms: parsePerms(row.permissions) }));
+  const globalBoardList = parseBoards(account.boards);
+  const perms = parsePerms(account.permissions);
+  const unrestricted = account.role === 'owner' || (['staff', 'moderator'].includes(account.role) && perms.length && !globalBoardList.length);
+  return { ...account, perms, globalBoardList, memberships,
+    boardList: unrestricted ? [] : [...new Set([...globalBoardList, ...memberships.map((m) => m.board)])] };
+}
+// null means unrestricted for this permission; [] means no access.
+export function permissionBoards(account, permission) {
+  if (!account || account.disabled) return [];
+  if (account.role === 'owner') return null;
+  const globalBoards = account.globalBoardList ?? account.boardList ?? [];
+  const globalGrant = ['staff', 'moderator'].includes(account.role) && account.perms?.includes(permission);
+  if (globalGrant && !globalBoards.length) return null;
+  return [...new Set([...(globalGrant ? globalBoards : []), ...(account.memberships || [])
+    .filter((m) => BOARD_PERMISSIONS.includes(permission) && m.perms.includes(permission)).map((m) => m.board)])];
+}
+export function can(account, permission, board) {
+  if (!account || account.disabled) return false;
+  if (account.role === 'owner') return true;
+  if (permission === 'create_boards') return account.perms?.includes(permission) || false;
+  const scope = permissionBoards(account, permission);
+  if (!BOARD_PERMISSIONS.includes(permission)) return scope === null;
+  return scope === null || (board ? scope.includes(board) : scope.length > 0);
+}
+export const isModerator = (account, board) => !!account && !account.disabled && (account.role === 'owner' ||
+  ['delete_posts', 'manage_boards', 'edit_board', 'manage_bans'].some((permission) => can(account, permission, board)));
+export const canViewHidden = (account, board) => !!account && BOARD_PERMISSIONS.some((permission) => can(account, permission, board));
+export function hiddenBoardSql(account, alias = 'b') {
+  if (account?.role === 'owner' || BOARD_PERMISSIONS.some((permission) => permissionBoards(account, permission) === null)) return '';
+  const boards = [...new Set(BOARD_PERMISSIONS.flatMap((permission) => permissionBoards(account, permission) || []))].filter((slug) => /^[a-z0-9]{1,16}$/.test(slug));
+  return `AND (${alias}.hidden = 0${boards.length ? ` OR ${alias}.slug IN (${boards.map((slug) => "'" + slug + "'").join(',')})` : ''})`;
 }
 
 export const parseBoards = (str) => String(str || '').split(',').map((b) => b.trim()).filter(Boolean);

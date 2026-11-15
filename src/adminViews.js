@@ -9,11 +9,11 @@ function nav(a) {
   if (can(a, 'view_alerts')) links.push(['/admin/alerts', 'Alerts']);
   if (can(a, 'manage_filters')) links.push(['/admin/filters', 'Keyword rules']);
   if (can(a, 'manage_bans')) links.push(['/admin/bans', 'Bans']);
-  if (can(a, 'manage_boards')) links.push(['/admin/boards', 'Boards']);
+  if (['manage_boards', 'edit_board', 'delete_board'].some((key) => can(a, key))) links.push(['/admin/boards', 'Boards']);
   if (can(a, 'view_logs')) links.push(['/admin/logs', 'Post logs']);
-  if (can(a, 'manage_settings')) links.push(['/admin/settings', 'Settings'], ['/admin/homepage', 'Homepage']);
+  if (can(a, 'manage_settings')) links.push(['/admin/settings', 'Settings'], ['/admin/homepage', 'Homepage'], ['/admin/discovery', 'Discovery / Webring'], ['/admin/network', 'Network controls'], ...((a.role === 'owner' || !a.boardList?.length) ? [['/admin/appearance', 'Appearance']] : []));
   if (a.role === 'owner') links.push(['/admin/accounts', 'Accounts'], ['/admin/audit', 'Staff activity']);
-  links.push(['/admin/account', 'My account']);
+  links.push(['/admin/community', 'My boards'], ['/admin/account', 'My account']);
   return `<nav class="adminnav">${links.map(([h, label]) => `<a href="${h}">${esc(t(label))}</a>`).join(' · ')}</nav>`;
 }
 
@@ -38,7 +38,7 @@ function permChecks(selected, disabled = false) {
 }
 
 export function dashboard(a, stats, msg) {
-  const perms = a.role === 'owner' ? ['Everything (owner)'] : a.perms.map((p) => PERMISSIONS[p]);
+  const perms = a.role === 'owner' ? ['Everything (owner)'] : [...new Set([...(a.perms || []), ...(a.memberships || []).flatMap((m) => m.perms)])].map((p) => PERMISSIONS[p]);
   return page(a, 'Admin', msg, `<section class="box">
   <p>Logged in as <strong>${esc(a.username)}</strong> (${esc(a.role)}).</p>
   <p>Your permissions: ${perms.length ? perms.map(esc).join(', ') : '<em>none yet. Ask the owner to grant some.</em>'}</p>
@@ -56,7 +56,8 @@ export function boardsPage(a, boards, msg) {
   <p><strong>Replacement permanently removes every existing board and post and resets site settings and homepage design. Accounts, bans and moderation evidence are retained.</strong></p>
   <label>Type REPLACE for replacement <input name="confirm_replace" autocomplete="off"></label>
   <button>Apply template</button></form>` : ''}
-  <h2>Create board</h2>
+  <p><a href="/admin/community">My owned boards / Create a community board</a></p>
+  ${can(a, 'manage_boards') ? `<h2>Create board</h2>
   <form method="post" action="/admin/boards">
     <label>Slug <input name="slug" required pattern="[a-z0-9]{1,16}" placeholder="g"> <small>lowercase letters/numbers, becomes /slug/</small></label>
     <label>Title <input name="title" required maxlength="60" placeholder="Technology"></label>
@@ -71,7 +72,7 @@ export function boardsPage(a, boards, msg) {
     <label class="check"><input type="checkbox" name="poster_ids"> Show per-thread poster IDs</label>
     <label class="check"><input type="checkbox" name="country_flags"> Show country flags</label>
     <button>Create</button>
-  </form>
+  </form>` : ''}
 </section>
 <section class="box">
   <h2>Existing boards</h2>
@@ -79,6 +80,10 @@ export function boardsPage(a, boards, msg) {
     <strong>/${esc(b.slug)}/${b.hidden ? '<br><small class="hiddenboard">hidden</small>' : ''}</strong>
     <input name="title" value="${esc(b.title)}" required maxlength="60">
     <textarea name="bio" rows="2" maxlength="500">${esc(b.bio)}</textarea>
+    <input type="hidden" name="embed_videos_present" value="1">
+    <label class="check"><input type="checkbox" name="embed_videos"${b.embed_videos ? ' checked' : ''}> Allow supported external video embeds (click to load)</label>
+    <label>Tor posting <select name="tor_mode">${['inherit', 'allow', 'captcha', 'block'].map((mode) => `<option value="${mode}"${b.tor_mode === mode ? ' selected' : ''}>${mode}</option>`).join('')}</select><small>Can strengthen the global Tor policy. CAPTCHA requires sharp.</small></label>
+    <label>Board theme <select name="theme"><option value="">Use site appearance</option>${['yotsuba-b', 'yotsuba', 'tomorrow', 'midnight', 'sakura', 'forest', 'ocean'].map((theme) => `<option value="${theme}"${b.theme === theme ? ' selected' : ''}>${theme}</option>`).join('')}</select></label>
     <label class="check"><input type="checkbox" name="visible" ${b.hidden ? '' : 'checked'}> Visible to users</label>
     <span class="cooldowns">Cooldowns (s): thread <input type="number" name="thread_cooldown" min="0" value="${b.thread_cooldown ?? ''}" placeholder="default">
       reply <input type="number" name="reply_cooldown" min="0" value="${b.reply_cooldown ?? ''}" placeholder="default"></span>
@@ -98,8 +103,9 @@ export function boardsPage(a, boards, msg) {
       <label>Image limit per thread <input type="number" min="1" name="image_limit" value="${b.image_limit ?? ''}" placeholder="unlimited"></label>
       <label>Threads per page <input type="number" min="1" max="50" name="threads_per_page" value="${b.threads_per_page ?? ''}" placeholder="10"></label>
     </details>
+    ${can(a, 'manage_members', b.slug) ? `<p><a href="/admin/board-staff/${esc(b.slug)}">Team and ownership</a></p>` : ''}
     <span><button name="action" value="save">Save</button>
-    <button name="action" value="delete" class="danger" onclick="return confirm('Delete /${esc(b.slug)}/ and ALL its posts?')">Delete</button></span>
+    ${can(a, 'manage_boards', b.slug) || can(a, 'delete_board', b.slug) ? `<button name="action" value="delete" class="danger" onclick="return confirm('Delete /${esc(b.slug)}/ and ALL its posts?')">Delete</button>` : ''}</span>
   </form>
   <div class="banners"><strong>Banners for /${esc(b.slug)}/</strong> <small>(one is shown at random above the board; 300x100 recommended)</small><br>
     ${(b.banners || []).map((bn) => `<form method="post" action="/admin/banners/${bn.id}/delete" class="inline banner-item">
@@ -144,6 +150,11 @@ export function settingsPage(a, s, msg) {
   return page(a, 'Settings', msg, `<form class="box" method="post" action="/admin/settings">
   <label class="check"><input type="checkbox" name="logging_enabled" ${s.logging_enabled === '1' ? 'checked' : ''}>
     Post logging: record the IP address, user agent, content and upload of every new thread and reply</label>
+  <fieldset><legend>Community accounts</legend>
+  <label class="check"><input type="checkbox" name="user_registration"${s.user_registration === '1' ? ' checked' : ''}> Allow public account registration</label>
+  <label class="check"><input type="checkbox" name="user_board_creation"${s.user_board_creation === '1' ? ' checked' : ''}> Allow registered users to create and own boards</label>
+  <label>Owned boards per user <input name="max_owned_boards" type="number" min="1" max="50" value="${esc(s.max_owned_boards)}"></label>
+  </fieldset>
   <label class="check"><input type="checkbox" name="captcha_enabled" ${s.captcha_enabled === '1' ? 'checked' : ''}> Require image CAPTCHA for anonymous posting (requires sharp)</label>
   <label>Maximum files per post <input type="number" name="max_files_per_post" min="1" max="4" value="${esc(s.max_files_per_post)}"> <small>Up to four files, each subject to the board size and type limits.</small></label>
   <p><strong>Warning:</strong> Disabling logging stops creation of log.out files and recording uploader IP addresses and names. You will have no uploader oversight or details for new posts. Existing logs remain until retention expires.</p>
@@ -187,11 +198,16 @@ export function settingsPage(a, s, msg) {
 
 export function accountsPage(a, accounts, msg) {
   return page(a, 'Accounts', msg, `<section class="box">
-  <h2>Create staff account</h2>
+  <h2>Create account</h2>
   <form method="post" action="/admin/accounts">
     <label>${esc(t('Username'))} <input name="username" required maxlength="32" pattern="[A-Za-z0-9_.\\-]{2,32}"></label>
     <label>${esc(t('Password'))} <input name="password" type="password" required minlength="8"></label>
-    <fieldset><legend>Permissions</legend>${permChecks([])}</fieldset>
+    <label>Role <select name="role"><option value="user">User</option><option value="board_owner">Board owner (requires board assignments)</option><option value="moderator">Moderator</option><option value="staff">Staff</option></select></label>
+    <label>Display name <input name="display_name" maxlength="50"></label>
+    <label class="check"><input type="checkbox" name="donor"> Donor badge (does not grant moderation powers)</label>
+    <label>Donor label <input name="donor_label" maxlength="24" value="Donor"></label>
+    <fieldset><legend>Global permissions</legend>${permChecks([])}</fieldset>
+    <p>Use each board team page to assign owners and moderators with individual permissions. Global staff permissions apply to Staff/Moderator roles; board creation can be granted to any account.</p>
     <label>Limit to boards <input name="boards" placeholder="e.g. g, v (blank = all boards)" maxlength="300">
       <small>Board-scoped staff ("janitors") can only act on posts, alerts and logs of these boards.</small></label>
     <button>Create account</button>
@@ -200,12 +216,16 @@ export function accountsPage(a, accounts, msg) {
 <section class="box">
   <h2>All accounts</h2>
   ${accounts.map((u) => `<div class="account ${u.disabled ? 'disabled' : ''}">
+    <p>Board assignments: ${(u.memberships || []).map((m) => `<a href="/admin/board-staff/${esc(m.board)}">/${esc(m.board)}/ (${esc(m.role)})</a>`).join(' | ') || 'none'} | <a href="/admin/boards">Assign through Boards / Team</a></p>
     <h3>${esc(u.username)} <small>${esc(u.role)}${u.disabled ? ' · DISABLED' : ''}</small></h3>
     ${u.disabled ? `<p class="error">Disabled: ${esc(u.disabled_reason || '(no reason given)')}</p>` : ''}
     <form method="post" action="/admin/accounts/${u.id}">
       <label>${esc(t('Username'))} <input name="username" value="${esc(u.username)}" required maxlength="32" pattern="[A-Za-z0-9_.\\-]{2,32}"></label>
       <label>${esc(t('New password'))} <input name="password" type="password" minlength="8" placeholder="leave blank to keep"></label>
-      ${u.role === 'owner' ? '' : `<fieldset><legend>Permissions</legend>${permChecks(u.perms)}</fieldset>
+      <label>Display name <input name="display_name" value="${esc(u.display_name)}" maxlength="50"></label>
+      <label class="check"><input type="checkbox" name="donor"${u.donor ? ' checked' : ''}> Donor badge</label>
+      <label>Donor label <input name="donor_label" value="${esc(u.donor_label || 'Donor')}" maxlength="24"></label>
+      ${u.role === 'owner' ? '' : `<label>Role <select name="role">${['user', 'board_owner', 'moderator', 'staff'].map((role) => `<option value="${role}"${u.role === role ? ' selected' : ''}>${role}</option>`).join('')}</select></label><fieldset><legend>Permissions</legend>${permChecks(u.perms)}</fieldset>
       <label>Limit to boards <input name="boards" value="${esc(u.boards)}" placeholder="blank = all boards" maxlength="300"></label>`}
       <button name="action" value="save">Save</button>
       <a href="/admin/audit?admin=${u.id}">View activity</a>
@@ -234,7 +254,7 @@ ${pager('/admin/audit', filters, pageNo, hasMore)}`);
 }
 
 export function myAccountPage(a, msg) {
-  return page(a, 'My account', msg, `<form class="box" method="post" action="/admin/account">
+  return page(a, 'My account', msg, `<section class="box"><h2>Profile</h2><p>Role: ${esc(a.role)}${a.donor ? ` | ${esc(a.donor_label || 'Donor')}` : ''}. Verified account posting and donor badges are optional per post.</p><form method="post" action="/admin/profile"><label>Display name <input name="display_name" value="${esc(a.display_name)}" maxlength="50"></label><button>Save profile</button></form><p><a href="/admin/community">My boards and assignments</a></p></section><form class="box" method="post" action="/admin/account">
   <h2>${esc(t('Change password'))}</h2>
   <label>${esc(t('Current password'))} <input name="current" type="password" required></label>
   <label>${esc(t('New password'))} <input name="password" type="password" required minlength="8"></label>

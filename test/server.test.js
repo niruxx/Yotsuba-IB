@@ -198,12 +198,22 @@ test('NSFW ratings, customized warnings and per-board confirmation', async () =>
     assert.match(html, /Sensitive content/);
     assert.match(html, /Think before entering &lt;script&gt;/);
     assert.match(html, /Continue to board/);
+    assert.match(html, /role="dialog" aria-modal="true"/);
+    assert.match(html, /Adults 18 and older only/);
+    assert.match(html, /name="age_confirmed" value="1" required/);
+    assert.doesNotMatch(html, /class="postform"/);
     assert.doesNotMatch(html, /<script>alert/);
     assert.equal(response.headers.get('cache-control'), 'private, no-store');
   }
   assert.doesNotMatch(await (await fetch(base + '/g/')).text(), /Continue to board/);
+  const spanishWarning = await (await fetch(base + '/adult/', { headers: { cookie: 'language=es' } })).text();
+  assert.match(spanishWarning, /Solo para mayores de 18/);
+  assert.match(spanishWarning, /name="age_confirmed"/);
+  const unconfirmed = await fetch(base + '/adult/nsfw/accept', { method: 'POST', redirect: 'manual', body: form({ destination: '/adult/' }) });
+  assert.equal(unconfirmed.status, 403);
+  assert.equal(unconfirmed.headers.get('set-cookie'), null);
   const accepted = await fetch(base + '/adult/nsfw/accept', {
-    method: 'POST', redirect: 'manual', body: form({ destination: '/adult/catalog?page=1' }),
+    method: 'POST', redirect: 'manual', body: form({ destination: '/adult/catalog?page=1', age_confirmed: '1' }),
   });
   assert.equal(accepted.status, 303);
   assert.equal(accepted.headers.get('location'), '/adult/catalog?page=1');
@@ -213,7 +223,7 @@ test('NSFW ratings, customized warnings and per-board confirmation', async () =>
   }
   assert.match(await (await fetch(base + '/adult2/', { headers: { cookie: acceptance } })).text(), /Continue to board/);
   const external = await fetch(base + '/adult/nsfw/accept', {
-    method: 'POST', redirect: 'manual', body: form({ destination: '//example.com/' }),
+    method: 'POST', redirect: 'manual', body: form({ destination: '//example.com/', age_confirmed: '1' }),
   });
   assert.equal(external.headers.get('location'), '/adult/');
   await staffPost('/admin/boards/adult', { action: 'save', title: 'Adult', visible: 'on', nsfw: '0' });

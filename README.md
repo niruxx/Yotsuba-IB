@@ -304,7 +304,7 @@ In **Admin > Boards**, the owner can apply **4chan-style** or **8kun-style** cur
 
 ## 🗺️ Roadmap
 
-See [**ROADMAP.md**](ROADMAP.md) for what's done and what's next. The main open items include S3 storage, audio/PDF uploads, drawing tools and independent board ownership.
+See [**ROADMAP.md**](ROADMAP.md) for what's done and what's next. The main open items include S3 storage, audio/PDF uploads, off-site backup targets and video similarity detection.
 
 ## 🤝 Contributing
 
@@ -326,3 +326,64 @@ Dependency audits, patching and deployment guidance: [Security maintenance](SECU
 - **Board-specific bans:** In **Admin > Bans**, select one board or the entire site. Posting-only bans leave reading available; access bans cover the selected board, its API and media. Board-scoped staff can only manage bans for assigned boards, while unrestricted staff can also manage site-wide bans. Appeals retain the applicable board scope. File-hash bans remain site-wide and require unrestricted staff.
 - **Multiple attachments:** Select up to four files in a posting form. The site maximum (one to four) is configurable in Settings. Each file receives independent content-type, size and file-ban checks; the entire submission is rejected when any file fails validation. The board's image limit counts all attachments, including those on the opening post. Deleting files removes all attachments on that post. Thread moves, retention, backups and private uploader logs include additional attachments. The JSON API retains legacy primary-file fields and adds an `attachments` array for additional files.
 - **Bottom bar and languages:** All rendered pages share board navigation, a theme selector and a language selector. Themes persist in browser preferences and stay synchronized with the settings panel. Language selection is stored in a cookie and works without JavaScript. Core navigation, posting and account controls support English, Spanish, French, German, Portuguese, Japanese, Russian and Simplified Chinese. Untranslated administrative help and advanced settings use English; board names, rules and posts stay as authored.
+
+NSFW board entry uses an accessible, mobile-friendly 18+ warning modal. Visitors must explicitly confirm they are 18 or older before continuing; declining or pressing Escape returns to the homepage. Confirmation is remembered per board for the browser session. The warning also appears on direct thread, catalog and archive links and works without JavaScript. This is a self-declared age warning, not identity or age verification. Customize its heading and additional message in Admin > Settings.
+
+
+### Site appearance and default themes
+
+Open **Admin > Appearance** to choose the default theme and customize the site's look. The seven built-in themes are Yotsuba, Yotsuba B, Tomorrow, Midnight, Sakura, Forest and Ocean. Midnight and Forest are dark palettes; Sakura and Ocean offer softer light palettes.
+
+The appearance editor includes theme cards and a live preview of colors, spacing and typography. Configure board and homepage widths, side/panel/reply padding, reply spacing, rounded corners, base font size, line height, font family and catalog tile size. Page widths apply on the public pages after saving, and narrow screens adapt automatically. Enable **Custom site colors** to edit sixteen colors, including backgrounds, text, links, form controls, names and quotes. **Use selected theme colors** fills the pickers with the selected palette. Changes stay in the preview until **Save appearance** is clicked.
+
+New visitors follow **Site default**, which is rendered before JavaScript runs. Visitors can choose any built-in theme using the bottom bar or Settings; their explicit choice is remembered in their browser. Choosing **Site default** again follows the administrator's current default and custom colors. Site-wide layout settings apply with every theme. Existing saved theme choices are preserved.
+
+Appearance requires unrestricted `manage_settings` permission (or the owner account). All values are validated; no arbitrary CSS or scripts can be submitted through this panel. **Restore appearance defaults** resets only appearance, keeping homepage sections, text, boards and other settings. Homepage content and section arrangement remain under **Admin > Homepage**.
+
+
+### Drawing, users, donors and independent boards
+
+**Drawing / oekaki:** On boards that accept PNG uploads, choose **Draw an image** in the posting form. The 640?480 canvas supports mouse, pen and touch, brush colors and sizes, an eraser, undo/redo and clearing. **Attach drawing to post** exports a PNG into the file picker while preserving already selected files. Submit the post normally when ready. Drawings receive the same type checks, file bans, limits, thumbnails, metadata handling and uploader logs as other uploads. **Download PNG** saves a local copy, including as a fallback for browsers without direct attachment support. Drawing tools also work in quick reply; artwork stays in browser memory until attached or downloaded.
+
+**Accounts:** The site owner can use **Admin > Accounts** to create users, board-owner accounts, moderators and staff; edit display names, reset passwords, disable accounts and assign global permissions and board scopes. The `board_owner` account label alone does not grant board access: ownership and moderator permissions are assigned on individual board team pages. Ordinary accounts remain subject to CAPTCHA, spam limits and bans. All accounts can use the existing authenticator-based 2FA and recovery codes.
+
+**Donors:** Donor status and a custom donor badge label are manually controlled by the site owner, separately from account role and moderation powers. A signed-in user can choose **Post as [display name]** on each post to show their account indicator and donor badge. Anonymous posting remains available, and forced-anonymous boards suppress account identity and donor badges. This feature manages donor recognition; it does not process payments.
+
+**Independent boards:** Enable registered-user board creation in **Admin > Settings > Community accounts**, or grant **Create and own boards** to specific accounts. Public account registration is separately optional and disabled by default; the site owner can always provision accounts. Users sign in and open **My boards** to create a board, subject to the configured owned-board limit. New board owners can edit their own title, description, rules, posting settings, visibility and banners, and select a board-specific built-in theme. Visitors' explicit theme choices remain respected.
+
+**Ownership and moderator controls:** Open **Admin > Boards > Team and ownership** for a board. The site owner can assign or remove board owners and moderators and independently grant editing, board deletion, team management, post moderation, alerts, bans and raw-IP log access. Owners of self-created boards start with editing, deletion, team, post, alert and board-ban permissions; raw-IP logs require a separate site-owner grant. Team managers can add existing accounts or create ordinary accounts for their board and appoint moderators, but cannot appoint owners, alter site-wide roles/donor status, edit their own assignment or another board owner's assignment, or grant powers they do not hold. Non-site-owner team managers are limited to twenty team members per board. Revocations take effect on the next request, and live alert streams recheck current permissions.
+
+Existing global staff permissions and legacy board scopes remain supported. Global appearance, homepage, settings, keyword rules, templates and account administration remain protected from independent board owners. A moderator can ban a poster without raw-IP log permission; the address is resolved server-side and hidden in the moderation interface.
+
+
+### Formatting, external videos and board discovery
+
+Posting forms now offer formatting buttons, also supported in quick reply:
+
+- `[b]bold[/b]`, `[i]italic[/i]`, `[u]underline[/u]`, `[s]strikethrough[/s]`
+- `[aa]ASCII art[/aa]` preserves spaces and line breaks without parsing formatting or quote links inside the block.
+- `[code]code[/code]` and `[spoiler]spoiler[/spoiler]` remain supported. Formatting can nest; arbitrary HTML is always escaped.
+
+Supported YouTube (watch, short, live and share URLs) and Vimeo links gain **Load video** buttons. Players load only after a visitor clicks, never automatically through thumbnails, metadata requests or preloaded iframes. The button warns that loading shares the visitor's connection IP with the provider. Players use YouTube's privacy-enhanced hostname or Vimeo's `dnt` option, with no forced autoplay; **Unload video** removes the player. Links inside code, ASCII-art and spoiler blocks do not produce players. Up to three distinct videos are offered per post. Provider-side privacy or embedding restrictions may still prevent playback. The site setting is under **Admin > Discovery / Webring**, with an additional per-board switch under **Boards**.
+
+Open **Boards & trends** (`/boards`) for the searchable public board directory and trending rankings. Use each board's **Favorite** button for personalized navigation in both bars. Guests save favorites in their browser; signed-in users sync up to 100 favorites to their account. Guest and account lists remain separate. Private boards are excluded from the public directory and trending endpoint, and account favorites only return boards the current user can access.
+
+Trending ranks currently retained posts and new threads in the last 24 hours relative to the previous 24 hours. SFW-only ranking is the default. Administrators can disable trending or include adult-board metadata under **Discovery / Webring**. Read-only rankings are available at `/api/trending.json`.
+
+### Webring participation
+
+In **Admin > Discovery / Webring**, enable the webring, supply the site's public URL and enter an approved list of communities as JSON. Each member supports `name`, `url`, optional `endpoint`, `description` and boolean `nsfw`. HTTP(S) destinations, including onion service URLs, are accepted; onion links require a Tor-capable browser.
+
+The directory at `/webring` provides community links and previous/next/random navigation around this site's approved list. `/webring.json` exports this site's name, configured URL, endpoint, `following`, `known` peers and public board metadata. Hidden boards are never exported. This implementation uses curated membership: it does not crawl remote feeds, fetch logos, recursively discover peers or import their content. There are no background requests to participating communities.
+
+### DNS blocklists and Tor controls
+
+**Admin > Network controls** is restricted to unrestricted site-settings administrators. DNSBL checks are off by default, with no provider selected. Configure up to five zones with the provider's documented positive return codes, one per line, for example `dnsbl.example.org=127.0.0.2,127.0.0.3`. Use a provider and DNS resolver authorized for your deployment. Queries use reversed IPv4 octets or expanded/reversed IPv6 nibbles. Only configured positive codes block posting; provider error codes are not treated as spam listings. Results are cached for five minutes, lookups have bounded resolver timeouts and concurrency, and local/private addresses are skipped. Configure whether lookup failures allow posting (default) or return a temporary rejection. Moderator exemptions apply only on boards they moderate. DNSBL queries disclose the connecting IP to the resolver/provider. These checks complement the existing posting limits and filters.
+
+Tor exit detection uses a locally cached official Tor Project exit list, refreshed with **Refresh official Tor exit list**. Refresh it regularly: lists older than seven days are ignored. Additional known exit/proxy IPs can be configured manually. Neither arbitrary Tor headers nor onion-looking Host headers mark a request as Tor traffic. The default skips DNSBL checks for detected Tor exits to avoid blocking shared exits; administrators can opt in.
+
+The site-wide Tor posting policy is **allow**, **captcha** or **block** (default: allow). Boards can strengthen that policy but cannot weaken it. CAPTCHA policies require sharp. Detected Tor clients use a signed, HttpOnly session cookie for client cooldowns (30 seconds by default), alongside a separate shared-exit cooldown (3 seconds) and board flood controls. Resetting a cookie does not bypass the exit cooldown. Tor session identifiers expire after 24 hours and are not stored in post logs. Country flags are suppressed for detected Tor posts, and moderator views flag shared Tor networks before an IP ban. Logging, when enabled, records the observed exit or gateway IP, not the user's original IP.
+
+For an onion service, run a dedicated listener bound to loopback, e.g. `node bin/cli.js --data ./yotsuba-data --host 127.0.0.1 --port 8421 --tor-listener`, and point the onion service at that port. `YOTSUBA_TOR_LISTENER=1` enables the same mode. The CLI refuses a non-loopback host with this flag. It marks all requests on that listener as Tor traffic; do not enable it on a general clearnet listener. Correct reverse-proxy trust and restricted backend access remain essential when using forwarded client IPs.
+
+Network settings and webring configuration live in SQLite. Full backups also include the cached Tor exit list under `network/`; database-only snapshots do not include it. Useful upstream references: [DNSBL query/return-code documentation](https://docs.spamhaus.com/datasets/docs/source/70-access-methods/data-query-service/040-dqs-queries.html), [Tor exit-list sources](https://rhatto.pages.torproject.net/wikipelago/network-health/metrics/exit-list-check/), [YouTube player documentation](https://developers.google.com/youtube/player_parameters) and [Vimeo embed options](https://developer.vimeo.com/player/sdk/embed).

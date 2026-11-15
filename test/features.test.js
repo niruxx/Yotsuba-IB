@@ -172,3 +172,32 @@ test('board-scoped staff cannot create, inspect or lift bans outside their board
   const otherPost = db.prepare("SELECT id FROM posts WHERE board = 'v' LIMIT 1").get();
   assert.equal((await get(`/admin/bans?post=${otherPost.id}`, { cookie: staffCookie })).status, 403);
 });
+
+test('appearance administration saves, validates, restores and enforces permissions', async () => {
+  const page = await (await get('/admin/appearance')).text();
+  assert.match(page, /Live preview/); assert.match(page, /value="midnight"/); assert.match(page, /name="panel_padding"/);
+  const homepageBefore = db.prepare("SELECT value FROM settings WHERE key = 'homepage'").get()?.value;
+  assert.equal((await post('/admin/appearance', { default_theme: 'forest', custom_colors: 'on', color_bg: '#102030', page_padding: '22', radius: '10', font_size: '16' })).status, 302);
+  const saved = JSON.parse(db.prepare("SELECT value FROM settings WHERE key = 'appearance'").get().value);
+  assert.equal(saved.default_theme, 'forest'); assert.equal(saved.page_padding, 22); assert.equal(saved.colors.bg, '#102030');
+  for (const url of ['/', '/g/', '/g/catalog', '/admin/account']) {
+    const html = await (await get(url, url.startsWith('/admin') ? {} : { cookie: '' })).text();
+    assert.match(html, /data-theme="forest"/); assert.match(html, /--site-page-padding:22px/);
+    assert.match(html, /:root\[data-theme-preference="site"\]\{--bg:#102030;/);
+  }
+  const invalid = await post('/admin/appearance', { default_theme: 'forest', color_bg: '</style><script>oops</script>' });
+  assert.equal(invalid.status, 400);
+  assert.equal(db.prepare("SELECT value FROM settings WHERE key = 'appearance'").get().value, JSON.stringify(saved));
+  const noCsrf = await fetch(base + '/admin/appearance', { method: 'POST', headers: { cookie }, body: form({ default_theme: 'ocean' }), redirect: 'manual' });
+  assert.equal(noCsrf.status, 403);
+  assert.equal((await get('/admin/appearance', { cookie: '' })).status, 302);
+  createAdmin(db, 'appearance-limited', 'limited-password', 'staff', ['manage_settings']);
+  db.prepare("UPDATE admins SET boards = 'g' WHERE username = 'appearance-limited'").run();
+  const logged = await fetch(base + '/admin/login', { method: 'POST', body: form({ username: 'appearance-limited', password: 'limited-password' }), redirect: 'manual' });
+  const limitedCookie = logged.headers.get('set-cookie').split(';')[0];
+  assert.equal((await get('/admin/appearance', { cookie: limitedCookie })).status, 403);
+  assert.equal((await post('/admin/appearance', { action: 'reset' })).status, 302);
+  assert.equal(JSON.parse(db.prepare("SELECT value FROM settings WHERE key = 'appearance'").get().value).default_theme, 'yotsuba-b');
+  assert.equal(db.prepare("SELECT value FROM settings WHERE key = 'homepage'").get()?.value, homepageBefore);
+  assert.ok(db.prepare("SELECT id FROM audit_log WHERE action = 'change_appearance'").get());
+});

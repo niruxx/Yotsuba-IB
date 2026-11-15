@@ -15,6 +15,7 @@ const { values: a, positionals } = parseArgs({
     data: { type: 'string', short: 'd', default: process.env.YOTSUBA_DATA || './yotsuba-data' },
     name: { type: 'string', default: process.env.YOTSUBA_NAME || 'Yotsuba-IB' },
     'max-file-mb': { type: 'string', default: '20' },
+    'tor-listener': { type: 'boolean', default: process.env.YOTSUBA_TOR_LISTENER === '1' },
     'trust-proxy': { type: 'boolean', default: false },
     help: { type: 'boolean', short: 'h' },
   },
@@ -38,6 +39,7 @@ Options:
       --name <text>     Site name shown in the header
       --max-file-mb <n> Upload size limit (default 20)
       --trust-proxy     Use X-Forwarded-For (enable behind nginx/Caddy)
+      --tor-listener    Mark a dedicated loopback onion listener as Tor traffic
 
 First-run admin can also be set non-interactively with
 YOTSUBA_ADMIN_USER and YOTSUBA_ADMIN_PASS environment variables.`);
@@ -126,12 +128,14 @@ setupDb.close();
 
 const geo = await loadGeo(dataDir);
 if (!geo) console.log('No GeoIP database found; country bans need `yotsuba-ib update-geoip` or a CDN country header.');
+if (a['tor-listener'] && !['127.0.0.1', '::1', 'localhost'].includes(a.host)) { console.error('--tor-listener requires --host 127.0.0.1, ::1 or localhost.'); process.exit(1); }
 const { app } = createServer({
   dataDir,
   geo,
   siteName: a.name,
   maxFileMb: Number(a['max-file-mb']),
   trustProxy: a['trust-proxy'],
+  torListener: a['tor-listener'],
 });
 app.listen(Number(a.port), a.host, () => {
   console.log(`${a.name} running at http://localhost:${a.port}  (data: ${dataDir})`);

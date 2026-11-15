@@ -1,3 +1,5 @@
+import { renderVideoEmbeds } from './embeds.js';
+import { THEMES, DEFAULT_APPEARANCE, appearanceCss, themeCss } from './appearance.js';
 import { attachmentUrl } from './attachments.js';
 import {
   esc, formatBody, fmtSize, fmtDate, mediaUrl, thumbUrl, quotedIds, flagEmoji, idColor,
@@ -5,36 +7,42 @@ import {
 import { t, LANGUAGES, CATALOGS } from './i18n.js';
 
 // Applied before first paint so the chosen theme doesn't flash.
-const THEME_BOOT = `<script>try{const p=JSON.parse(localStorage.getItem('prefs')||'{}');
-document.documentElement.dataset.theme=p.theme||'yotsuba-b';}catch{}</script>`;
+const themeBoot = (appearance) => `<script>window.YOTSUBA_APPEARANCE=${JSON.stringify({ defaultTheme: appearance.default_theme, themes: Object.entries(THEMES).map(([key, theme]) => [key, theme.name]), palettes: Object.fromEntries(Object.entries(THEMES).map(([key, theme]) => [key, theme.colors])) })};
+try{const p=JSON.parse(localStorage.getItem('prefs')||'{}');const valid=window.YOTSUBA_APPEARANCE.themes.some(([key])=>key===p.theme);document.documentElement.dataset.themePreference=valid?p.theme:'site';document.documentElement.dataset.theme=valid?p.theme:window.YOTSUBA_APPEARANCE.defaultTheme;}catch{}</script>`;
 
-export function layout({ title, siteName, admin, boards = [], alertCount = null, body, announcement = '', hasFaq = false, ctx = {}, birthday = null, labels = {}, language = 'en', destination = '/' }) {
+export function layout({ title, siteName, admin, boards = [], alertCount = null, body, announcement = '', hasFaq = false, ctx = {}, birthday = null, labels = {}, language = 'en', destination = '/', appearance = DEFAULT_APPEARANCE, registrationEnabled = false, discoveryBoards = boards, webringEnabled = false }) {
   const L = { nav_search: 'search', nav_settings: 'settings', nav_admin: 'admin', footer: 'Powered by Yotsuba-IB', ...labels };
+  const gated = body.includes('class="nsfw-gate"');
   return `<!DOCTYPE html>
-<html lang="${language}" data-theme="yotsuba-b"${birthday ? ` class="birthday" style="--hat-color:${esc(birthday.color)};--hat-url:url(/static/hats/${esc(birthday.hat)}.svg)"` : ''}><head>
+<html lang="${language}" data-theme="${appearance.default_theme}" data-site-theme="${appearance.default_theme}" data-theme-preference="site"${birthday ? ` class="birthday" style="--hat-color:${esc(birthday.color)};--hat-url:url(/static/hats/${esc(birthday.hat)}.svg)"` : ''}><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(title)}</title>
-${THEME_BOOT}
+${themeBoot(appearance)}
 <link rel="stylesheet" href="/static/style.css">
-</head><body${ctx.board ? ` data-board="${esc(ctx.board)}"` : ''}${ctx.thread ? ` data-thread="${ctx.thread}"` : ''}>
-<nav class="topbar">
+<style id="theme-palettes">${themeCss()}</style>
+<style id="site-appearance">${appearanceCss(appearance)}</style>
+</head><body data-account="${admin ? '1' : '0'}"${ctx.board ? ` data-board="${esc(ctx.board)}"` : ''}${ctx.thread ? ` data-thread="${ctx.thread}"` : ''}>
+<nav class="topbar"${gated ? ' inert aria-hidden="true"' : ''}>
   <a href="/" class="sitename">${esc(siteName)}</a>
   <span class="boardnav">[ ${boards.map((b) => `<a href="/${esc(b.slug)}/" title="${esc(b.title)}"${b.hidden ? ' class="hiddenboard"' : ''}>${esc(b.slug)}</a>`).join(' / ')} ]</span>
+  <a href="/boards" class="discovery-link">${esc(t('Boards & trends'))}</a>
+  <span class="favorites-nav" hidden></span>
   <span class="right">
     <a href="/search">${esc(t(L.nav_search))}</a> · <a href="#" id="open-settings">${esc(t(L.nav_settings))}</a>
     ${admin ? ` · ${alertCount !== null
-    ? `<a href="/admin/alerts" class="alertbadge${alertCount ? ' hot' : ''}" id="alertbadge">alerts (<span id="alertcount">${alertCount}</span>)</a> · ` : ''}<a href="/admin">${esc(L.nav_admin)}</a> · <form method="post" action="/admin/logout" class="inline"><button class="linkbtn">logout</button></form>` : ''}
+    ? `<a href="/admin/alerts" class="alertbadge${alertCount ? ' hot' : ''}" id="alertbadge">alerts (<span id="alertcount">${alertCount}</span>)</a> · ` : ''}<a href="/admin/community">${esc(t('My boards'))}</a> | <a href="/admin">${esc(L.nav_admin)}</a> · <form method="post" action="/admin/logout" class="inline"><button class="linkbtn">logout</button></form>` : ` | <a href="/admin/login">Sign in</a>${registrationEnabled ? ' | <a href="/register">Register</a>' : ''}`}
   </span>
 </nav>
 ${announcement.trim() ? `<div class="announcement" data-hash="${esc(simpleHash(announcement))}">${esc(announcement)}
   <a href="#" class="dismiss-announcement" title="hide">×</a></div>` : ''}
 <div id="settings-panel" class="settings-panel" hidden></div>
-<div id="watcher" hidden><div class="w-head">Watched threads <a href="#" id="watcher-toggle">[–]</a></div><ul id="watcher-list"></ul></div>
+<div id="watcher" hidden${gated ? ' inert aria-hidden="true"' : ''}><div class="w-head">Watched threads <a href="#" id="watcher-toggle">[–]</a></div><ul id="watcher-list"></ul></div>
 ${body}
-<nav class="bottombar" aria-label="${esc(t('Boards'))}">
+<nav class="bottombar" aria-label="${esc(t('Boards'))}"${gated ? ' inert aria-hidden="true"' : ''}>
   <span class="boardnav">[ ${boards.map((b) => `<a href="/${esc(b.slug)}/" title="${esc(b.title)}"${b.hidden ? ' class="hiddenboard"' : ''}>${esc(b.slug)}</a>`).join(' / ')} ]</span>
-  <div class="bottom-controls">
-    <label>${esc(t('Theme'))} <select id="bottom-theme" aria-label="${esc(t('Theme'))}"><option value="yotsuba">Yotsuba</option><option value="yotsuba-b" selected>Yotsuba B</option><option value="tomorrow">${esc(t('Tomorrow (dark)'))}</option></select></label>
+  <span class="favorites-nav" hidden></span>
+  <div class="bottom-controls"><a href="/boards">${esc(t('Boards & trends'))}</a>${webringEnabled ? `<a href="/webring">${esc(t('Webring'))}</a>` : ''}
+    <label>${esc(t('Theme'))} <select id="bottom-theme" aria-label="${esc(t('Theme'))}"><option value="site" selected>${esc(t('Site default'))} (${esc(THEMES[appearance.default_theme].name)})</option>${Object.entries(THEMES).map(([key, theme]) => `<option value="${key}">${esc(t(theme.name))}</option>`).join('')}</select></label>
     <form method="post" action="/language" class="inline">
       <input type="hidden" name="destination" value="${esc(destination)}">
       <label>${esc(t('Language'))} <select name="language" aria-label="${esc(t('Language'))}">${Object.entries(LANGUAGES).map(([key, name]) => `<option value="${key}"${key === language ? ' selected' : ''}>${name}</option>`).join('')}</select></label>
@@ -42,9 +50,12 @@ ${body}
     </form>
   </div>
 </nav>
-<footer>${esc(L.footer)}${hasFaq ? ' · <a href="/faq">FAQ</a>' : ''}</footer>
+<footer${gated ? ' inert aria-hidden="true"' : ''}>${esc(L.footer)}${hasFaq ? ' · <a href="/faq">FAQ</a>' : ''}</footer>
 <script>window.YOTSUBA_I18N=${JSON.stringify(CATALOGS[language] || {}).replace(/</g, '\\u003c')};</script>
 <script src="/static/app.js" defer></script>
+<script src="/static/oekaki.js" defer></script>
+<script>window.YOTSUBA_BOARDS=${JSON.stringify(discoveryBoards.map((b) => ({ slug: b.slug, title: b.title }))).replace(/</g, '\\u003c')};</script>
+<script src="/static/discovery.js" defer></script>
 ${alertCount !== null ? `<div id="toasts"></div>
 <script>
 // Live staff notifications: keyword matches, blocked posts, reports and appeals arrive over Server-Sent Events.
@@ -108,6 +119,9 @@ export function renderPost(p, board, { isOp, admin, backlinks }) {
     <a href="#" class="hide-post" title="Hide this post">[–]</a>
     ${p.subject ? `<span class="subject">${esc(p.subject)}</span>` : ''}
     <span class="name${p.capcode ? ' capcode' : ''}">${esc(p.name)}${p.tripcode ? ` <span class="trip">${esc(p.tripcode)}</span>` : ''}${p.capcode ? ` <strong>## ${esc(p.capcode)}</strong>` : ''}</span>
+    ${p.is_tor && admin ? '<span class="network-tag" title="Tor exit or onion gateway; an IP ban may affect multiple visitors">Tor / shared network</span>' : ''}
+    ${p.account_verified ? '<span class="account-verified" title="Posted using a signed-in account">Account</span>' : ''}
+    ${p.account_badge ? `<span class="donor-badge">${esc(p.account_badge)}</span>` : ''}
     ${p.poster_id ? `<span class="posterid" style="background:${idColor(p.poster_id)}" title="Highlight posts by this ID">ID: ${esc(p.poster_id)}</span>` : ''}
     ${p.country ? `<span class="country" title="${esc(p.country)}">${flagEmoji(p.country)}</span>` : ''}
     <span class="date" data-time="${p.created}">${fmtDate(p.created)}</span>
@@ -130,6 +144,7 @@ export function renderPost(p, board, { isOp, admin, backlinks }) {
   </div>
   ${isOp ? '' : postFiles(p)}
   <blockquote>${formatBody(p.body, slug)}</blockquote>
+  ${board.embeds_enabled ? renderVideoEmbeds(p.body) : ''}
 </div>`;
 }
 
@@ -176,15 +191,19 @@ export function postForm(board, threadId, maxMb, loggedIn = false) {
     ${board.forced_anon ? '' : `<tr><th>${esc(t('Name'))}</th><td><input name="name" placeholder="${esc(t('Anonymous'))}" maxlength="80" title="Name#password for a tripcode"></td></tr>`}
     <tr><th>${esc(t('Options'))}</th><td><input name="options" maxlength="40" placeholder="sage / nonoko"></td></tr>
     ${threadId ? '' : `<tr><th>${esc(t('Subject'))}</th><td><input name="subject" maxlength="100"${board.require_subject ? ' required' : ''}></td></tr>`}
-    <tr><th>${esc(t('Comment'))}</th><td><textarea name="body" rows="5" maxlength="4000" placeholder="${esc(t('Comment'))}"></textarea></td></tr>
+    <tr><th>${esc(t('Comment'))}</th><td><textarea name="body" rows="5" maxlength="4000" placeholder="${esc(t('Comment'))}"></textarea>
+    <div class="format-tools">${[['b', 'Bold'], ['i', 'Italic'], ['u', 'Underline'], ['s', 'Strike'], ['aa', 'ASCII art'], ['code', 'Code']].map(([tag, label]) => `<button type="button" class="format-button" data-format="${tag}">${esc(t(label))}</button>`).join('')}</div></td></tr>
     ${board.text_only ? '' : `<tr><th>${esc(t('File'))}</th><td><input type="file" name="file" multiple accept="${acceptFor(board)}">
       <label class="inline-check"><input type="checkbox" name="spoiler"> ${esc(t('Spoiler'))}</label>
       <small>max ${maxMb} MB · ${typesFor(board).join(' ')}${threadId ? '' : ' · required for new threads'}</small></td></tr>`}
+    ${!board.text_only && typesFor(board).includes('png') ? `<tr><th>Drawing</th><td><button type="button" class="oekaki-open">${esc(t('Draw an image'))}</button><div class="oekaki-workbench" hidden></div></td></tr>` : ''}
     <tr><th>${esc(t('Password'))}</th><td><input type="password" name="password" class="delpw" maxlength="64" autocomplete="off">
       <small>for deleting your post later (saved in this browser)</small></td></tr>
     ${loggedIn ? `<tr><th>${esc(t('Staff'))}</th><td><label><input type="checkbox" name="capcode"> Post with staff capcode</label></td></tr>` : ''}
     <tr><th></th><td><button>${esc(t(threadId ? 'Post reply' : 'New thread'))}</button>
-      <small class="formhelp">[spoiler]…[/spoiler] · [code]…[/code] · &gt;&gt;123 · &gt;&gt;&gt;/board/123</small></td></tr>
+      <small class="formhelp">[b]bold[/b] | [i]italic[/i] | [u]underline[/u] | [s]strike[/s] | [aa]ASCII art[/aa] | [spoiler]…[/spoiler] · [code]…[/code] · &gt;&gt;123 · &gt;&gt;&gt;/board/123</small></td></tr>
+  <!--account-options-->
+  <!--network-notice-->
   <!--captcha-->
   </table>
 </form>`;
@@ -203,6 +222,7 @@ function boardHeader(board, current, banner = null) {
   const tab = (href, label, key) => (current === key ? `<strong>[${esc(t(label))}]</strong>` : `<a href="${href}">[${esc(t(label))}]</a>`);
   return `<header class="hero">${banner ? `<img class="banner" src="/banner/${banner}" alt="">` : ''}
   <h1>/${esc(board.slug)}/ - ${esc(board.title)}${board.nsfw ? ' <small class="nsfw">NSFW</small>' : ''}</h1>${hiddenNote(board)}
+  <button type="button" class="board-favorite" data-favorite-board="${esc(board.slug)}" aria-pressed="false">Favorite</button>
   ${board.bio ? `<p class="bio">${esc(board.bio)}</p>` : ''}</header>
 <nav class="boardtabs">${tab(`/${board.slug}/`, 'Index', 'index')} ${tab(`/${board.slug}/catalog`, 'Catalog', 'catalog')}
   ${tab(`/${board.slug}/archive`, 'Archive', 'archive')} <a href="/search?board=${esc(board.slug)}">[${esc(t('Search'))}]</a>
@@ -343,13 +363,18 @@ export function errorPage(message) {
 }
 
 export function nsfwWarningPage(board, settings, destination) {
-  return `<header class="hero"><h1>${esc(settings.nsfw_warning_title)}</h1></header>
-<section class="box" aria-labelledby="nsfw-board-title">
-  <h2 id="nsfw-board-title">/${esc(board.slug)}/ - ${esc(board.title)} <small class="nsfw">NSFW</small></h2>
-  <p style="white-space:pre-wrap">${esc(settings.nsfw_warning_text)}</p>
+  return `<div class="nsfw-gate">
+<section class="nsfw-dialog" role="dialog" aria-modal="true" aria-labelledby="nsfw-warning-title" aria-describedby="nsfw-age-notice nsfw-warning-message">
+  <div class="nsfw-age-badge" aria-hidden="true">18+</div>
+  <h1 id="nsfw-warning-title">${esc(settings.nsfw_warning_title)}</h1>
+  <h2>/${esc(board.slug)}/ - ${esc(board.title)} <small class="nsfw">NSFW</small></h2>
+  <p id="nsfw-age-notice"><strong>${esc(t('Age-restricted content. Adults 18 and older only.'))}</strong></p>
+  <p id="nsfw-warning-message">${esc(settings.nsfw_warning_text)}</p>
   <form method="post" action="/${esc(board.slug)}/nsfw/accept">
     <input type="hidden" name="destination" value="${esc(destination)}">
-    <button>Continue to board</button> <a href="/">Go back to homepage</a>
+    <label class="nsfw-confirm"><input type="checkbox" name="age_confirmed" value="1" required> ${esc(t('I confirm that I am 18 or older and wish to view this content.'))}</label>
+    <div class="nsfw-actions"><a href="/" class="nsfw-leave">${esc(t('Leave / Go back to homepage'))}</a>
+    <button>${esc(t('Continue to board'))}</button></div>
   </form>
-</section>`;
+</section></div>`;
 }

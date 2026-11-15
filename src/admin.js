@@ -1,10 +1,12 @@
+import { THEMES } from './appearance.js';
+import { ACCOUNT_ROLES } from './community.js';
 import { newTotpSecret, verifyTotp, recoveryCodes, recoveryHash, consumeSecondFactor } from './security.js';
 import { BOARD_TEMPLATES } from './templates.js';
 import { DEFAULT_HOMEPAGE } from './homepage.js';
 import crypto from 'node:crypto';
 import {
   PERMISSIONS, SETTING_DEFAULTS, can, parsePerms, verifyPassword, createAdmin, setPassword,
-  getSettings, setSetting,
+  getSettings, setSetting, permissionBoards, hydrateAccount,
 } from './db.js';
 import * as A from './adminViews.js';
 
@@ -34,6 +36,9 @@ export function registerAdmin(app, ctx) {
   const back = (res, to, msg) => res.redirect(`${to}?msg=${encodeURIComponent(msg)}`);
   const pageNo = (req) => Math.max(0, parseInt(req.query.page, 10) || 0);
   const boardExtras = (body) => ({
+    tor_mode: ['inherit', 'allow', 'captcha', 'block'].includes(body.tor_mode) ? body.tor_mode : 'inherit',
+    embed_videos: body.embed_videos ? 1 : 0,
+    theme: typeof body.theme === 'string' && Object.hasOwn(THEMES, body.theme) ? body.theme : '',
     category: String(body.category || '').trim().slice(0, 40),
     position: Math.trunc(Number(body.position)) || 0,
     rules: String(body.rules || '').replace(/\r\n/g, '\n').trim().slice(0, 3000),
@@ -50,13 +55,13 @@ export function registerAdmin(app, ctx) {
     image_limit: Number(body.image_limit) >= 1 ? Math.floor(Number(body.image_limit)) : null,
     threads_per_page: Number(body.threads_per_page) >= 1 ? Math.min(50, Math.floor(Number(body.threads_per_page))) : null,
   });
-  const EXTRA_COLS = ['category', 'position', 'rules', 'poster_ids', 'country_flags', 'nsfw', 'text_only', 'require_subject',
+  const EXTRA_COLS = ['tor_mode', 'embed_videos', 'theme', 'category', 'position', 'rules', 'poster_ids', 'country_flags', 'nsfw', 'text_only', 'require_subject',
     'forced_anon', 'max_file_mb', 'allowed_types', 'bump_limit', 'image_limit', 'threads_per_page'];
   // Only fields present in the form are updated (the create form shows fewer than the edit form).
   const saveExtras = (slug, body, x) => {
     for (const col of EXTRA_COLS) {
       const inForm = col in body || ['poster_ids', 'country_flags', 'nsfw', 'text_only', 'require_subject', 'forced_anon'].includes(col);
-      if (inForm) db.prepare(`UPDATE boards SET ${col} = ? WHERE slug = ?`).run(x[col], slug);
+      if (inForm || (col === 'embed_videos' && body.embed_videos_present === '1')) db.prepare(`UPDATE boards SET ${col} = ? WHERE slug = ?`).run(x[col], slug);
     }
   };
   // Blank = use the site default (NULL); otherwise a whole number of seconds.
@@ -175,11 +180,22 @@ export function registerAdmin(app, ctx) {
     return fail(req, res, 'Unknown action.');
   });
 
+  app.post('/admin/profile', requireLogin, (req, res) => {
+    db.prepare('UPDATE admins SET display_name = ? WHERE id = ?').run(String(req.body.display_name || '').trim().slice(0, 50), req.admin.id);
+    audit(req, 'update_profile');
+    back(res, '/admin/account', 'Profile saved.');
+  });
+
   // ---------- boards ----------
-  app.get('/admin/boards', requirePerm('manage_boards'), (req, res) => {
+  const boardEditor = (req, res, next) => {
+    if (!req.admin) return res.redirect('/admin/login');
+    if (!['manage_boards', 'edit_board', 'delete_board'].some((key) => can(req.admin, key))) return fail(req, res, 'You cannot manage boards.', 403);
+    next();
+  };
+  app.get('/admin/boards', boardEditor, (req, res) => {
     const banners = db.prepare('SELECT id, board FROM banners ORDER BY id').all();
     const boards = db.prepare('SELECT * FROM boards ORDER BY position, slug').all()
-      .filter((b) => can(req.admin, 'manage_boards', b.slug))
+      .filter((b) => ['manage_boards', 'edit_board', 'delete_board'].some((key) => can(req.admin, key, b.slug)))
       .map((b) => ({ ...b, banners: banners.filter((bn) => bn.board === b.slug) }));
     render(req, res, 'Boards', A.boardsPage(req.admin, boards, req.query.msg));
   });
@@ -226,11 +242,12 @@ export function registerAdmin(app, ctx) {
     audit(req, 'create_board', `/${slug}/ "${title}"${hidden ? ' (hidden)' : ''}`);
     back(res, '/admin/boards', `Created /${slug}/`);
   });
-  app.post('/admin/boards/:slug', requirePerm('manage_boards'), (req, res) => {
+  app.post('/admin/boards/:slug', boardEditor, async (req, res) => {
+    if (req.body.tor_mode === 'captcha') { try { await import('sharp'); } catch { return fail(req, res, 'Install sharp before requiring Tor CAPTCHA.'); } }
     const board = getBoard(req.params.slug);
     if (!board) return fail(req, res, 'No such board.', 404);
-    if (!can(req.admin, 'manage_boards', board.slug)) return fail(req, res, 'You do not have permission to manage this board.', 403);
     if (req.body.action === 'delete') {
+      if (!can(req.admin, 'manage_boards', board.slug) && !can(req.admin, 'delete_board', board.slug)) return fail(req, res, 'You cannot delete this board.', 403);
       // Delete thread by thread so each thread's upload folder is removed too.
       const threads = db.prepare('SELECT id FROM posts WHERE board = ? AND thread_id IS NULL').all(board.slug);
       for (const { id } of threads) deletePost(id);
@@ -238,6 +255,7 @@ export function registerAdmin(app, ctx) {
       audit(req, 'delete_board', `/${board.slug}/ "${board.title}"`);
       return back(res, '/admin/boards', `Deleted /${board.slug}/`);
     }
+    if (!can(req.admin, 'manage_boards', board.slug) && !can(req.admin, 'edit_board', board.slug)) return fail(req, res, 'You cannot edit this board.', 403);
     const title = String(req.body.title || '').trim().slice(0, 60) || board.title;
     const bio = String(req.body.bio || '').trim().slice(0, 500);
     const hidden = req.body.visible ? 0 : 1;
@@ -269,9 +287,10 @@ export function registerAdmin(app, ctx) {
     const where = [];
     const args = [];
     if (filters.ip) { where.push('l.ip = ?'); args.push(filters.ip); }
-    if (req.admin.role !== 'owner' && req.admin.boardList?.length) {
-      where.push(`l.board IN (${req.admin.boardList.map(() => '?').join(',')})`);
-      args.push(...req.admin.boardList);
+    const logBoards = permissionBoards(req.admin, 'view_logs');
+    if (logBoards !== null) {
+      where.push(`l.board IN (${logBoards.map(() => '?').join(',')})`);
+      args.push(...logBoards);
     }
     if (filters.board) { where.push('l.board = ?'); args.push(filters.board); }
     if (filters.kind === 'upload') where.push('l.file_orig IS NOT NULL');
@@ -295,7 +314,7 @@ export function registerAdmin(app, ctx) {
     if (req.body.captcha_enabled) {
       try { await import('sharp'); } catch { return fail(req, res, 'Install sharp before enabling image CAPTCHA.'); }
     }
-    const next = { captcha_enabled: req.body.captcha_enabled ? '1' : '0', max_files_per_post: String(Math.min(4, Math.max(1, Math.trunc(Number(req.body.max_files_per_post) || Number(before.max_files_per_post))))), logging_enabled: req.body.logging_enabled ? '1' : '0' };
+    const next = { user_registration: req.body.user_registration ? '1' : '0', user_board_creation: req.body.user_board_creation ? '1' : '0', max_owned_boards: String(Math.min(50, Math.max(1, Math.trunc(Number(req.body.max_owned_boards) || Number(before.max_owned_boards))))), captcha_enabled: req.body.captcha_enabled ? '1' : '0', max_files_per_post: String(Math.min(4, Math.max(1, Math.trunc(Number(req.body.max_files_per_post) || Number(before.max_files_per_post))))), logging_enabled: req.body.logging_enabled ? '1' : '0' };
     for (const key of ['thread_inactivity_days', 'file_retention_days', 'log_retention_days', 'cooldown_thread_sec',
       'cooldown_reply_sec', 'cooldown_upload_sec', 'max_links', 'duplicate_window_min', 'board_flood_per_min', 'phash_threshold',
       'archive_days', 'backup_interval_hours', 'backup_keep']) {
@@ -326,7 +345,7 @@ export function registerAdmin(app, ctx) {
 
   // ---------- accounts (owner only) ----------
   const loadAccounts = () => db.prepare('SELECT * FROM admins ORDER BY role = \'owner\' DESC, username').all()
-    .map((u) => ({ ...u, perms: parsePerms(u.permissions) }));
+    .map((u) => hydrateAccount(db, u));
 
   app.get('/admin/accounts', requireOwner, (req, res) =>
     render(req, res, 'Accounts', A.accountsPage(req.admin, loadAccounts(), req.query.msg)));
@@ -339,7 +358,9 @@ export function registerAdmin(app, ctx) {
     if (db.prepare('SELECT 1 FROM admins WHERE username = ?').get(username)) return fail(req, res, 'Username taken.');
     const perms = permsFromBody(req.body);
     const boards = boardsFromBody(req.body);
-    createAdmin(db, username, password, 'staff', perms);
+    const role = ACCOUNT_ROLES.includes(req.body.role) ? req.body.role : 'user';
+    createAdmin(db, username, password, role, perms);
+    db.prepare('UPDATE admins SET display_name = ?, donor = ?, donor_label = ? WHERE username = ?').run(String(req.body.display_name || '').trim().slice(0, 50), req.body.donor ? 1 : 0, String(req.body.donor_label || 'Donor').trim().slice(0, 24) || 'Donor', username);
     db.prepare('UPDATE admins SET boards = ? WHERE username = ?').run(boards, username);
     audit(req, 'create_account', `${username} with [${perms.join(', ') || 'no permissions'}]${boards ? ` on boards ${boards}` : ''}`);
     back(res, '/admin/accounts', `Created ${username}`);
@@ -365,7 +386,19 @@ export function registerAdmin(app, ctx) {
       return back(res, '/admin/accounts', `${action === 'disable' ? 'Disabled' : 'Enabled'} ${u.username}`);
     }
 
+    const requestedName = String(req.body.username || '').trim();
+    if (requestedName && requestedName !== u.username && (!USERNAME_RE.test(requestedName) || db.prepare('SELECT id FROM admins WHERE username = ?').get(requestedName))) return fail(req, res, 'Invalid or unavailable username.');
+    if (req.body.password && String(req.body.password).length < 8) return fail(req, res, 'Password must be at least 8 characters.');
     const changes = [];
+    if (u.role !== 'owner'  && req.body.role !== undefined) {
+      if (!ACCOUNT_ROLES.includes(req.body.role)) return fail(req, res, 'Invalid account role.');
+      db.prepare('UPDATE admins SET role = ? WHERE id = ?').run(req.body.role, u.id);
+      if (req.body.role !== u.role) changes.push(`role: ${u.role} ? ${req.body.role}`);
+    }
+    if (req.body.display_name !== undefined) {
+      db.prepare('UPDATE admins SET display_name = ?, donor = ?, donor_label = ? WHERE id = ?').run(String(req.body.display_name || '').trim().slice(0, 50), req.body.donor ? 1 : 0, String(req.body.donor_label || 'Donor').trim().slice(0, 24) || 'Donor', u.id);
+      changes.push('profile and donor settings updated');
+    }
     const username = String(req.body.username || '').trim();
     if (username && username !== u.username) {
       if (!USERNAME_RE.test(username)) return fail(req, res, 'Username must be 2-32 letters, numbers, _ . or -');

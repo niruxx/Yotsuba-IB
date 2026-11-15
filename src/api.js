@@ -18,6 +18,8 @@ function postJson(p, board) {
     name: p.name,
     com: p.body,
   };
+  if (p.account_verified) out.account_verified = 1;
+  if (p.account_badge) out.account_badge = p.account_badge;
   if (p.subject) out.sub = p.subject;
   if (p.tripcode) out.trip = p.tripcode;
   if (p.capcode) out.capcode = p.capcode.toLowerCase();

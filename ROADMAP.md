@@ -51,7 +51,7 @@ Items are roughly ordered by priority within each section.
 - [x] Post preview on quote-link hover, "(You)" markers, backlinks showing who replied
 - [x] Multiple files per post (up to four, configurable site maximum)
 - [ ] Audio (mp3/ogg) and PDF uploads
-- [ ] Oekaki / drawing board
+- [x] Oekaki / drawing tools in posting and quick-reply forms (PNG export and attachment)
 
 ## Browsing
 
@@ -92,3 +92,15 @@ Items are roughly ordered by priority within each section.
 - [ ] Off-site backup targets (S3, rsync)
 
 - [x] Shared bottom board navigation, synchronized theme selector and eight-language core interface
+
+- [x] Seven built-in themes and separate Appearance administration: site defaults, custom colors, typography, widths, padding, spacing and corner rounding with a live preview
+
+- [x] Independent board ownership, scoped team management, individual permissions, optional registration and owned-board quotas
+- [x] User profiles, optional verified account posting, and separate owner-managed donor status/badges
+
+- [x] Rich BBCode formatting (bold, italic, underline, strike) and literal ASCII-art blocks, with posting toolbar
+- [x] Click-to-load YouTube/Vimeo embeds with site and board controls
+- [x] Browser/account favorites and public trending-board discovery
+- [x] Opt-in DNS blocklist checks with explicit return codes, caching and failure policy
+- [x] Curated webring directory, navigation and public JSON metadata
+- [x] Tor exit-list detection, dedicated onion listener mode, board policies and separate client/shared-exit cooldowns

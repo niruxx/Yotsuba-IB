@@ -1,11 +1,11 @@
 import { esc, fmtDate } from './format.js';
-import { can } from './db.js';
+import { can, permissionBoards } from './db.js';
 import { page } from './adminViews.js';
 
+const mayViewIp = (account, board) => board ? can(account, 'view_logs', board) : permissionBoards(account, 'view_logs') === null;
 const KIND_LABEL = { keyword: 'Keyword match', blocked: 'Blocked post', report: 'User report', appeal: 'Ban appeal' };
 
 export function alertsPage(a, rows, status, msg) {
-  const showIp = can(a, 'view_logs');
   return page(a, 'Alerts', msg, `
 <p class="filters">
   ${status === 'open' ? '<strong>Open</strong>' : '<a href="/admin/alerts">Open</a>'} ·
@@ -19,16 +19,16 @@ ${rows.map((r) => `<div class="alert kind-${esc(r.kind)}">
   <div class="alerthead">
     <strong>${KIND_LABEL[r.kind] || esc(r.kind)}</strong> · #${r.id} · ${fmtDate(r.created)}
     ${r.kind === 'appeal' ? '· <a href="/admin/bans">handle on the Bans page</a>' : r.post_id ? (r.live ? `· <a href="/${esc(r.board)}/post/${r.post_id}">/${esc(r.board)}/ No.${r.post_id}</a>` : `· /${esc(r.board)}/ No.${r.post_id} <small>(deleted)</small>`) : `· /${esc(r.board || '?')}/ <small>(post was not created)</small>`}
-    ${showIp && r.ip ? `· IP <a href="/admin/logs?ip=${encodeURIComponent(r.ip)}">${esc(r.ip)}</a>` : ''}
+    ${mayViewIp(a, r.board) && r.ip ? `· IP <a href="/admin/logs?ip=${encodeURIComponent(r.ip)}">${esc(r.ip)}</a>` : ''}
     ${r.handled_by ? `· handled by ${esc(r.handled_by)} ${fmtDate(r.handled_at)}` : ''}
   </div>
   <div class="alertdetail">${r.kind === 'report' ? 'Reason: ' : 'Matched: '}${esc(r.detail)}</div>
   <blockquote>${esc(r.excerpt)}</blockquote>
   <form method="post" action="/admin/alerts/${r.id}" class="inline">
     ${status === 'open' ? '<button name="action" value="resolve">Resolve</button>' : '<button name="action" value="reopen">Reopen</button>'}
-    ${r.live && can(a, 'delete_posts') ? `<button name="action" value="delete_post" class="danger" onclick="return confirm('Delete post ${r.post_id}?')">Delete post &amp; resolve</button>` : ''}
+    ${r.live && can(a, 'delete_posts', r.board) ? `<button name="action" value="delete_post" class="danger" onclick="return confirm('Delete post ${r.post_id}?')">Delete post &amp; resolve</button>` : ''}
   </form>
-  ${r.post_id && can(a, 'manage_bans') ? `<a href="/admin/bans?post=${r.post_id}">Ban poster…</a>` : ''}
+  ${r.post_id && can(a, 'manage_bans', r.board) ? `<a href="/admin/bans?post=${r.post_id}">Ban poster…</a>` : ''}
 </div>`).join('') || `<p class="empty">No ${status} alerts.</p>`}
 </div>
 <script>
@@ -59,8 +59,9 @@ ${rows.map((f) => `<tr><td class="content">${esc(f.pattern)}</td><td>${f.is_rege
 </table>`);
 }
 
-function banRow(b, active) {
-  return `<tr><td>#${b.id}</td><td>${esc(b.kind)}<br><small>${b.board ? `/${esc(b.board)}/` : 'site-wide'}</small></td><td>${esc(b.value)}</td>
+const banValue = (a, ban) => ban.kind === 'country' || (ban.board ? can(a, 'view_logs', ban.board) : permissionBoards(a, 'view_logs') === null) ? esc(ban.value) : '[IP hidden]';
+function banRow(b, active, a) {
+  return `<tr><td>#${b.id}</td><td>${esc(b.kind)}<br><small>${b.board ? `/${esc(b.board)}/` : 'site-wide'}</small></td><td>${banValue(a, b)}</td>
   <td>${b.scope === 'access' ? '<strong>site access</strong>' : 'posting'}</td>
   <td class="content">${esc(b.reason)}${b.post_id ? `<br><small>post No.${b.post_id}</small>` : ''}</td>
   <td>${esc(b.created_by)}<br><small>${fmtDate(b.created)}</small></td>
@@ -73,9 +74,9 @@ export function bansPage(a, { active, past, fileBans, appeals, prefill, geoSourc
   return page(a, 'Bans', msg, `${appeals.length ? `<section class="box">
   <h2>Open appeals (${appeals.length})</h2>
   ${appeals.map((ap) => `<div class="account">
-    <p><strong>Ban #${ap.ban_id}</strong>: ${esc(ap.kind)} ${esc(ap.value)}, ${ap.scope === 'access' ? 'site access' : 'posting'},
+    <p><strong>Ban #${ap.ban_id}</strong>: ${esc(ap.kind)} ${banValue(a, ap)}, ${ap.scope === 'access' ? 'site access' : 'posting'},
       expires ${ap.expires ? fmtDate(ap.expires) : 'never'}${ap.lifted ? ' (already lifted)' : ''}<br>
-      <small>Ban reason: ${esc(ap.reason)} · appealed ${fmtDate(ap.created)}${can(a, 'view_logs') && ap.ip ? ` from ${esc(ap.ip)}` : ''}</small></p>
+      <small>Ban reason: ${esc(ap.reason)} · appealed ${fmtDate(ap.created)}${mayViewIp(a, ap.board) && ap.ip ? ` from ${esc(ap.ip)}` : ''}</small></p>
     <blockquote>${esc(ap.text)}</blockquote>
     <form method="post" action="/admin/appeals/${ap.id}" class="disableform">
       <input name="response" maxlength="500" placeholder="Response shown to the user (optional)">
@@ -87,16 +88,16 @@ export function bansPage(a, { active, past, fileBans, appeals, prefill, geoSourc
 <section class="box">
   <h2>New ban</h2>
   ${prefill ? `<p class="notice">Banning the poster of No.${prefill.post_id}${prefill.excerpt ? `: "${esc(prefill.excerpt)}"` : ''}</p>
-    ${prefill.ip ? '' : '<p class="error">No IP was logged for this post (post logging was off). Enter one manually or use a country/range ban.</p>'}` : ''}
+    ${prefill.ip ? '' : prefill.has_ip ? '<p>Uploader IP is hidden. It will be resolved when you submit an IP ban for this post.</p>' : '<p class="error">No IP was logged for this post (post logging was off). Enter one manually or use a country/range ban.</p>'}` : ''}
   <form method="post" action="/admin/bans">
     ${prefill ? `<input type="hidden" name="post_id" value="${prefill.post_id}">` : ''}
-    <label>Board <select name="board">${a.role === 'owner' || !a.boardList?.length ? '<option value="">Entire site</option>' : ''}${boards.map((b) => `<option value="${esc(b.slug)}"${prefill?.board === b.slug ? ' selected' : ''}>/${esc(b.slug)}/</option>`).join('')}</select> <small>Board bans affect only that board, including its media.</small></label>
+    <label>Board <select name="board">${permissionBoards(a, 'manage_bans') === null ? '<option value="">Entire site</option>' : ''}${boards.map((b) => `<option value="${esc(b.slug)}"${prefill?.board === b.slug ? ' selected' : ''}>/${esc(b.slug)}/</option>`).join('')}</select> <small>Board bans affect only that board, including its media.</small></label>
     <label>Type <select name="kind">
       <option value="ip">Single IP address</option>
       <option value="range">IP range (CIDR, e.g. 203.0.113.0/24)</option>
       <option value="country">Country (ISO code, e.g. DE)</option>
     </select></label>
-    <label>Value <input name="value" required value="${esc(prefill?.ip || '')}"></label>
+    <label>Value <input name="value"${prefill?.has_ip ? '' : ' required'} value="${esc(prefill?.ip || '')}"></label>
     <label>Blocks <select name="scope">
       <option value="post">Posting only (can still read)</option>
       <option value="access">All access to the site</option>
@@ -111,9 +112,9 @@ export function bansPage(a, { active, past, fileBans, appeals, prefill, geoSourc
   <p><small>Country detection: ${geoSource ? esc(geoSource) : '<strong class="danger">not configured</strong>. Run <code>yotsuba-ib update-geoip</code> or set a CDN header in Settings. Country bans do nothing until then.'}</small></p>
 </section>
 <h2 class="center">Active bans</h2>
-<table class="grid">${head}${active.map((b) => banRow(b, true)).join('') || '<tr><td colspan="8"><em>None.</em></td></tr>'}</table>
+<table class="grid">${head}${active.map((b) => banRow(b, true, a)).join('') || '<tr><td colspan="8"><em>None.</em></td></tr>'}</table>
 <h2 class="center">Expired / lifted (last 50)</h2>
-<table class="grid">${head}${past.map((b) => banRow(b, false)).join('') || '<tr><td colspan="8"><em>None.</em></td></tr>'}</table>
+<table class="grid">${head}${past.map((b) => banRow(b, false, a)).join('') || '<tr><td colspan="8"><em>None.</em></td></tr>'}</table>
 <h2 class="center">Banned files</h2>
 <table class="grid"><tr><th>SHA-256</th><th>Reason</th><th>By</th><th></th></tr>
 ${fileBans.map((f) => `<tr><td><code>${esc(f.sha256.slice(0, 24))}…</code></td><td>${esc(f.reason)}</td>

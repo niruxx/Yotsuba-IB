@@ -1,6 +1,11 @@
+import { createNetwork, registerNetwork, torPolicy } from './network.js';
+import { registerDiscovery } from './discovery.js';
+import { registerCommunity } from './community.js';
+import { getAppearance, registerAppearance, THEMES } from './appearance.js';
 import { createAttachments } from './attachments.js';
 import { CaptchaStore } from './security.js';
 import { t } from './i18n.js';
+import { esc } from './format.js';
 import { languageMiddleware, LANGUAGES } from './i18n.js';
 import { createBoardStorage } from './storage.js';
 import express from 'express';
@@ -9,7 +14,7 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { openDb, getSettings, parsePerms, parseBoards, can, serverSecret } from './db.js';
+import { openDb, getSettings, parsePerms, parseBoards, can, serverSecret, hydrateAccount, permissionBoards, isModerator, canViewHidden, hiddenBoardSql } from './db.js';
 import { storeMedia, thumbPath } from './media.js';
 import { registerApi } from './api.js';
 import { getHomepage, homepageData, registerHomepage } from './homepage.js';
@@ -23,7 +28,7 @@ import {
 import * as V from './views.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const RESERVED = new Set(['admin', 'static', 'uploads', 'media', 'api', 'search', 'faq', 'appeal', 'rss', 'language', 'captcha', 'banner', 'branding', 'healthz', 'metrics']);
+const RESERVED = new Set(['admin', 'static', 'uploads', 'media', 'api', 'search', 'faq', 'appeal', 'rss', 'language', 'captcha', 'banner', 'branding', 'healthz', 'metrics', 'register', 'boards', 'webring', 'webring.json']);
 const DAY = 24 * 3600 * 1000;
 
 // Identify file type by magic bytes rather than trusting the client.
@@ -41,16 +46,17 @@ function sniff(buf) {
 export function createServer(opts) {
   const {
     dataDir, siteName = 'Yotsuba-IB', maxFileMb = 20, threadsPerPage = 10,
-    maxPages = 10, bumpLimit = 300, trustProxy = false, geo = null,
+    maxPages = 10, bumpLimit = 300, trustProxy = false, geo = null, torListener = false, networkOptions = {},
   } = opts;
   const db = openDb(dataDir);
   const storage = createBoardStorage(dataDir, db);
+  const network = createNetwork({ db, dataDir, torListener, ...networkOptions });
   const mod = createModeration({ db, geo, trustProxy });
   const lastReport = new Map();
   const uploadDir = path.join(dataDir, 'uploads');
   const salt = crypto.randomBytes(16).toString('hex'); // per-process salt for the cooldown hash
   const captchas = new CaptchaStore();
-  const captchaIp = (req) => crypto.createHmac('sha256', serverSecret(db)).update(req.ip).digest('hex');
+  const captchaIp = (req) => crypto.createHmac('sha256', serverSecret(db)).update(req.isTor ? req.torClient || req.ip : req.ip).digest('hex');
   const rates = new RateMemory();       // cooldowns + flood counters
   const recentText = new Map();         // normalized-text hash -> last time posted (duplicate detection)
   const floodAlerted = new Map();       // board -> time a flood alert was last raised
@@ -78,10 +84,10 @@ export function createServer(opts) {
     const m = /(?:^|;\s*)sid=([a-f0-9]{64})/.exec(req.headers.cookie || '');
     req.admin = null;
     if (m) {
-      const s = db.prepare(`SELECT a.id, a.username, a.role, a.permissions, a.boards, s.csrf FROM sessions s JOIN admins a ON a.id = s.admin_id
+      const s = db.prepare(`SELECT a.id, a.username, a.role, a.permissions, a.boards, a.display_name, a.donor, a.donor_label, s.csrf FROM sessions s JOIN admins a ON a.id = s.admin_id
                             WHERE s.token = ? AND s.expires > ? AND a.disabled = 0`).get(m[1], Date.now());
       if (s) {
-        req.admin = { ...s, perms: parsePerms(s.permissions), boardList: parseBoards(s.boards) };
+        req.admin = hydrateAccount(db, s);
         req.sid = m[1];
         req.csrf = s.csrf;
         if (!req.csrf) {
@@ -92,6 +98,8 @@ export function createServer(opts) {
     }
     next();
   });
+
+  app.use(network.middleware);
 
   // CSRF: every form POST made with a staff session must carry the session's token.
   // (Multipart post forms are checked in the post handler, after the body is parsed.)
@@ -117,11 +125,12 @@ export function createServer(opts) {
   });
 
   // Hidden boards are only listed for, and reachable by, logged-in staff.
-  const listBoards = (req) => db.prepare(
-    `SELECT slug, title, bio, hidden, category, nsfw FROM boards ${req.admin ? '' : 'WHERE hidden = 0'} ORDER BY position, slug`).all();
+  const listBoards = (req) => db.prepare('SELECT slug, title, bio, hidden, category, nsfw FROM boards ORDER BY position, slug').all()
+    .filter((board) => !board.hidden || canViewHidden(req.admin, board.slug));
   const render = (req, res, title, body, status = 200) => {
-    const scoped = req.admin?.role !== 'owner' && req.admin?.boardList?.length;
-    const alertBoards = scoped ? req.admin.boardList : [];
+    const scope = permissionBoards(req.admin, 'view_alerts');
+    const scoped = scope !== null;
+    const alertBoards = scope || [];
     const alertCount = can(req.admin, 'view_alerts')
       ? db.prepare(`SELECT COUNT(*) AS n FROM alerts WHERE status = 'open'
           ${scoped ? `AND board IN (${alertBoards.map(() => '?').join(',')})` : ''}`).get(...alertBoards).n : null;
@@ -133,7 +142,9 @@ export function createServer(opts) {
       res.set('Cache-Control', 'private, no-store');
       res.vary('Cookie');
     }
-    if (st.captcha_enabled === '1' && !req.admin && body.includes('<!--captcha-->')) {
+    const pagePolicy = db.prepare('SELECT tor_mode FROM boards WHERE slug = ?').get(req.path.split('/')[1]);
+    const needsCaptcha = st.captcha_enabled === '1' || (req.isTor && torPolicy(st, pagePolicy) === 'captcha');
+    if (needsCaptcha && !isModerator(req.admin, req.path.split('/')[1]) && body.includes('<!--captcha-->')) {
       const token = captchas.issue(captchaIp(req));
       res.set('Cache-Control', 'private, no-store');
       const widget = token ? `<tr class="captcha"><th>${t('Verification code')}</th><td>
@@ -143,8 +154,15 @@ export function createServer(opts) {
       body = body.replace('<!--captcha-->', widget);
     }
     body = body.replace('<!--captcha-->', '');
+    body = body.replaceAll('<!--network-notice-->', req.isTor ? `<tr><td colspan="2" class="network-notice">Tor connection detected. Posting policy: ${torPolicy(st, pagePolicy)}.</td></tr>` : '');
+    const accountOption = req.admin ? `<tr><th>${esc(t('Account'))}</th><td><label><input type="checkbox" name="post_as_account"> Post as ${esc(req.admin.display_name || req.admin.username)}</label></td></tr>` : '';
+    body = body.replaceAll('<!--account-options-->', accountOption);
+    body = body.replaceAll('class="postform"', `class="postform" data-max-files="${st.max_files_per_post}"`);
+    const appearance = getAppearance(db);
+    const pageBoard = db.prepare('SELECT theme FROM boards WHERE slug = ?').get(req.path.split('/')[1]);
+    if (pageBoard?.theme && Object.hasOwn(THEMES, pageBoard.theme)) { appearance.default_theme = pageBoard.theme; appearance.custom_colors = false; }
     const html = V.layout({ title, siteName, admin: req.admin, boards: listBoards(req), alertCount, body,
-      announcement: st.announcement, hasFaq: !!st.faq_text.trim(), birthday, language: req.language, destination: req.originalUrl, labels: getHomepage(db).labels });
+      announcement: st.announcement, hasFaq: !!st.faq_text.trim(), birthday, appearance, discoveryBoards: listBoards(req), webringEnabled: st.webring_enabled === '1', registrationEnabled: st.user_registration === '1', language: req.language, destination: req.originalUrl, labels: getHomepage(db).labels });
     res.status(status).type('html').send(withCsrf(req, html));
   };
   // Adds the staff CSRF token to every POST form in a chunk of HTML.
@@ -163,7 +181,7 @@ export function createServer(opts) {
 
   // Bans that block site access (e.g. country bans for legal reasons). Staff and the login page are exempt.
   app.use((req, res, next) => {
-    if (req.admin || req.path.startsWith('/static/') || req.path.startsWith('/admin/login') || req.path === '/appeal') return next();
+    if (isModerator(req.admin, req.path.split('/')[1]) || req.path.startsWith('/static/') || req.path.startsWith('/admin/login') || req.path === '/appeal') return next();
     const slug = req.path.startsWith('/api/') ? req.path.split('/')[2] : req.path.split('/')[1];
     const ban = mod.findBan(req, 'access', slug);
     if (ban) return banned(req, res, ban);
@@ -173,7 +191,7 @@ export function createServer(opts) {
   const getBoard = (slug) => db.prepare('SELECT * FROM boards WHERE slug = ?').get(slug);
   const getVisibleBoard = (req, slug) => {
     const b = getBoard(slug);
-    return b && (!b.hidden || req.admin) ? b : undefined;
+    return b && (!b.hidden || canViewHidden(req.admin, b.slug)) ? { ...b, embeds_enabled: getSettings(db).video_embeds_enabled === '1' && !!b.embed_videos } : undefined;
   };
   const boardMaxMb = (board) => Math.min(board.max_file_mb || maxFileMb, maxFileMb);
   const randomBanner = (slug) => db.prepare('SELECT id FROM banners WHERE board = ? ORDER BY RANDOM() LIMIT 1').get(slug)?.id ?? null;
@@ -252,8 +270,8 @@ export function createServer(opts) {
   app.get('/media/thumb/:name', (req, res, next) => {
     const p = db.prepare(`SELECT p.file, p.thumb, p.board, b.hidden FROM posts p JOIN boards b ON b.slug = p.board
                           WHERE p.id = ? AND p.file IS NOT NULL`).get(parseInt(req.params.name, 10));
-    if (!p || !p.thumb || (p.hidden && !req.admin)) return next();
-    const ban = !req.admin && mod.findBan(req, 'access', p.board);
+    if (!p || !p.thumb || (p.hidden && !canViewHidden(req.admin, p.board))) return next();
+    const ban = !isModerator(req.admin, p.board) && mod.findBan(req, 'access', p.board);
     if (ban) return banned(req, res, ban);
     res.sendFile(thumbPath(path.resolve(uploadDir, p.file)), {
       headers: { 'Content-Type': 'image/jpeg', 'Cache-Control': p.hidden ? 'private, no-store' : 'public, max-age=2592000' },
@@ -263,8 +281,8 @@ export function createServer(opts) {
     const id = parseInt(req.params.name, 10);
     const p = db.prepare(`SELECT p.file, p.file_mime, p.board, b.hidden FROM posts p JOIN boards b ON b.slug = p.board
                           WHERE p.id = ? AND p.file IS NOT NULL`).get(id);
-    if (!p || (p.hidden && !req.admin)) return next();
-    const ban = !req.admin && mod.findBan(req, 'access', p.board);
+    if (!p || (p.hidden && !canViewHidden(req.admin, p.board))) return next();
+    const ban = !isModerator(req.admin, p.board) && mod.findBan(req, 'access', p.board);
     if (ban) return banned(req, res, ban);
     res.sendFile(path.resolve(uploadDir, p.file), {
       headers: { 'Content-Type': p.file_mime, 'Cache-Control': p.hidden ? 'private, no-store' : 'public, max-age=2592000' },
@@ -273,7 +291,7 @@ export function createServer(opts) {
 
   app.get('/captcha/new', (req, res) => {
     res.set('Cache-Control', 'no-store');
-    if (getSettings(db).captcha_enabled !== '1') return res.status(404).json({ error: 'CAPTCHA disabled' });
+    if (getSettings(db).captcha_enabled !== '1' && !req.isTor) return res.status(404).json({ error: 'CAPTCHA disabled' });
     const token = captchas.issue(captchaIp(req));
     return token ? res.json({ token }) : res.status(429).json({ error: 'Too many challenges' });
   });
@@ -289,8 +307,8 @@ export function createServer(opts) {
   const extraMedia = (thumbnail) => (req, res, next) => {
     const file = db.prepare(`SELECT a.*, p.board, b.hidden FROM attachments a JOIN posts p ON p.id = a.post_id
       JOIN boards b ON b.slug = p.board WHERE a.id = ? AND a.file IS NOT NULL`).get(Number(req.params.id));
-    if (!file || (file.hidden && !req.admin) || (thumbnail && !file.thumb)) return next();
-    const ban = !req.admin && mod.findBan(req, 'access', file.board);
+    if (!file || (file.hidden && !canViewHidden(req.admin, file.board)) || (thumbnail && !file.thumb)) return next();
+    const ban = !isModerator(req.admin, file.board) && mod.findBan(req, 'access', file.board);
     if (ban) return banned(req, res, ban);
     res.sendFile(path.resolve(uploadDir, file.file) + (thumbnail ? '.thumb.jpg' : ''), {
       headers: { 'Content-Type': thumbnail ? 'image/jpeg' : file.file_mime, 'Cache-Control': file.hidden ? 'private, no-store' : 'public, max-age=2592000' },
@@ -320,7 +338,7 @@ export function createServer(opts) {
       const like = `%${q.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
       const args = [like, like];
       let where = `(p.body LIKE ? ESCAPE '\\' OR p.subject LIKE ? ESCAPE '\\')`;
-      if (!req.admin) where += ' AND b.hidden = 0';
+      where += ' ' + hiddenBoardSql(req.admin);
       if (boardSlug) { where += ' AND p.board = ?'; args.push(boardSlug); }
       results = db.prepare(`SELECT p.* FROM posts p JOIN boards b ON b.slug = p.board WHERE ${where}
                             ORDER BY p.id DESC LIMIT 50`).all(...args);
@@ -331,6 +349,10 @@ export function createServer(opts) {
   const { audit } = registerAdmin(app, { db, render, fail, deletePost, uploadDir, getBoard, RESERVED, runPurge, storage });
   registerModeration(app, { db, render, fail, deletePost, mod, audit, rmUpload, uploadDir, storage, attachments });
   registerApi(app, { db, getVisibleBoard, listBoards, thumbPath, attachments });
+  registerDiscovery(app, { db, render, fail, audit, siteName, listBoards, getVisibleBoard });
+  registerNetwork(app, { db, render, fail, audit, network });
+  registerCommunity(app, { db, render, fail, audit, RESERVED, storage, captchas, captchaIp });
+  registerAppearance(app, { db, render, fail, audit });
   registerHomepage(app, { db, dataDir, render, fail, audit, csrfOk, views: HV });
 
   // --- health & metrics ---
@@ -373,7 +395,7 @@ export function createServer(opts) {
   const bannerUpload = multer({ dest: bannerDir, limits: { fileSize: 2 * 1024 * 1024, files: 1, fields: 5 } });
   app.get('/banner/:id', (req, res, next) => {
     const b = db.prepare('SELECT bn.*, bo.hidden FROM banners bn JOIN boards bo ON bo.slug = bn.board WHERE bn.id = ?').get(Number(req.params.id));
-    if (!b || (b.hidden && !req.admin)) return next();
+    if (!b || (b.hidden && !canViewHidden(req.admin, b.board))) return next();
     res.sendFile(b.file, { root: bannerDir, headers: { 'Content-Type': b.mime, 'Cache-Control': b.hidden ? 'private, no-store' : 'public, max-age=86400' } },
       (err) => err && !res.headersSent && next());
   });
@@ -382,7 +404,7 @@ export function createServer(opts) {
     if (!req.admin) { cleanup(); return res.redirect('/admin/login'); }
     if (!csrfOk(req)) { cleanup(); return fail(req, res, 'Invalid or missing CSRF token. Reload the page and try again.', 403); }
     const board = getBoard(req.params.slug);
-    if (!board || !can(req.admin, 'manage_boards', board.slug)) { cleanup(); return fail(req, res, 'No such board or no permission.', 403); }
+    if (!board || !(can(req.admin, 'manage_boards', board.slug) || can(req.admin, 'edit_board', board.slug))) { cleanup(); return fail(req, res, 'No such board or no permission.', 403); }
     if (!req.file) return fail(req, res, 'Choose an image.');
     const head = Buffer.alloc(16);
     const fd = fs.openSync(req.file.path, 'r'); fs.readSync(fd, head, 0, 16, 0); fs.closeSync(fd);
@@ -397,7 +419,7 @@ export function createServer(opts) {
   app.post('/admin/banners/:id/delete', (req, res) => {
     if (!req.admin) return res.redirect('/admin/login');
     const b = db.prepare('SELECT * FROM banners WHERE id = ?').get(Number(req.params.id));
-    if (!b || !can(req.admin, 'manage_boards', b.board)) return fail(req, res, 'No such banner or no permission.', 403);
+    if (!b || !(can(req.admin, 'manage_boards', b.board) || can(req.admin, 'edit_board', b.board))) return fail(req, res, 'No such banner or no permission.', 403);
     db.prepare('DELETE FROM banners WHERE id = ?').run(b.id);
     fs.rm(path.join(bannerDir, b.file), { force: true }, () => {});
     audit(req, 'remove_banner', `/${b.board}/`);
@@ -408,6 +430,7 @@ export function createServer(opts) {
   app.post('/:slug/nsfw/accept', (req, res, next) => {
     const board = getVisibleBoard(req, req.params.slug);
     if (!board) return next();
+    if (board.nsfw && req.body.age_confirmed !== '1') return fail(req, res, 'You must confirm that you are 18 or older before entering this board.', 403);
     const prefix = `/${board.slug}/`;
     const destination = String(req.body.destination || '');
     const safeDestination = destination.startsWith(prefix) && !/[\\\r\n]/.test(destination)
@@ -442,7 +465,7 @@ export function createServer(opts) {
       return { op: attachments.decorate(op), replies: replies.map(attachments.decorate), omitted: op.reply_count - replies.length };
     });
     render(req, res, `/${board.slug}/ - ${board.title}`,
-      V.boardPage(board, threads, { admin: staffCaps(req, board.slug), loggedIn: !!req.admin, page, pages, maxMb: boardMaxMb(board), banner: randomBanner(board.slug) }));
+      V.boardPage(board, threads, { admin: staffCaps(req, board.slug), loggedIn: isModerator(req.admin, board.slug), page, pages, maxMb: boardMaxMb(board), banner: randomBanner(board.slug) }));
   });
   app.get('/:slug/thread/:id', (req, res, next) => {
     const board = getVisibleBoard(req, req.params.slug);
@@ -451,7 +474,7 @@ export function createServer(opts) {
     if (!op) return fail(req, res, 'Thread not found (it may have been pruned or deleted).', 404);
     const replies = db.prepare('SELECT * FROM posts WHERE thread_id = ? ORDER BY id').all(op.id);
     render(req, res, `/${board.slug}/ - ${op.subject || op.body.slice(0, 40) || `No.${op.id}`}`,
-      V.threadPage(board, attachments.decorate(op), replies.map(attachments.decorate), { admin: staffCaps(req, board.slug), loggedIn: !!req.admin, maxMb: boardMaxMb(board), banner: randomBanner(board.slug) }));
+      V.threadPage(board, attachments.decorate(op), replies.map(attachments.decorate), { admin: staffCaps(req, board.slug), loggedIn: isModerator(req.admin, board.slug), maxMb: boardMaxMb(board), banner: randomBanner(board.slug) }));
   });
 
   // Thread auto-update: returns rendered HTML for replies newer than ?after=<postId>.
@@ -515,26 +538,40 @@ export function createServer(opts) {
     const board = getVisibleBoard(req, req.params.slug);
     if (!board) return bail('No such board.', 404);
 
-    if (!req.admin) {
+    const moderating = isModerator(req.admin, board.slug);
+    if (!moderating) {
       const ban = mod.findBan(req, 'post', board.slug);
       if (ban) { cleanup(); return banned(req, res, ban); }
     }
 
     const settings = getSettings(db);
-    if (settings.captcha_enabled === '1' && !req.admin && !captchas.verify(req.body.captcha_token, req.body.captcha_answer, captchaIp(req))) return bail('Invalid or expired CAPTCHA. Reload the board or thread to get a new challenge.', 403);
+    const policy = torPolicy(settings, board);
+    if (req.isTor && !moderating && policy === 'block') return bail('Tor posting is disabled on this board.', 403);
+    if ((settings.captcha_enabled === '1' || (req.isTor && policy === 'captcha')) && !moderating && !captchas.verify(req.body.captcha_token, req.body.captcha_answer, captchaIp(req))) return bail('Invalid or expired CAPTCHA. Reload the board or thread to get a new challenge.', 403);
     if (req.files.length > Number(settings.max_files_per_post)) return bail(`Maximum ${settings.max_files_per_post} files per post.`);
     const num = (k) => Number(settings[k]) || 0;
-    const ipHash = crypto.createHash('sha256').update(salt + req.ip).digest('hex').slice(0, 16);
+    if (!moderating) {
+      const verdict = await network.check(req.ip, settings, req.isTor);
+      if (verdict.listed) return bail('Posting from this network was rejected by a configured DNS blocklist.', 403);
+      if (verdict.unavailable && settings.dnsbl_failure === 'deny') return bail('Unable to validate this posting network. Please try again later.', 503);
+    }
+    const ipHash = crypto.createHash('sha256').update(salt + (req.isTor ? req.torClient || req.ip : req.ip)).digest('hex').slice(0, 16);
     const now = Date.now();
+    if (req.isTor && !moderating) {
+      const clientWait = Number(settings.tor_post_cooldown_sec) * 1000 - (now - rates.last(`tor-client:${req.torClient}`));
+      const exitWait = Number(settings.tor_exit_cooldown_sec) * 1000 - (now - rates.last(`tor-exit:${normIp(req.ip)}`));
+      if (Math.max(clientWait, exitWait) > 0) return bail(`Please wait ${Math.ceil(Math.max(clientWait, exitWait) / 1000)} seconds before posting through Tor again.`, 429);
+    }
     const threadId = req.body.thread ? Number(req.body.thread) : null;
     const kind = threadId ? 'reply' : 'thread';
     // Name field: "Name#pass" gives a tripcode (!abc), "Name##pass" a secure tripcode (!!abc) keyed by a server secret.
     const rawName = String(req.body.name || '').trim().slice(0, 80);
     const hashIdx = rawName.indexOf('#');
-    const name = board.forced_anon ? 'Anonymous'
+    const identified = !!req.admin && !!req.body.post_as_account && !board.forced_anon;
+    const name = identified ? (req.admin.display_name || req.admin.username) : board.forced_anon ? 'Anonymous'
       : (hashIdx >= 0 ? rawName.slice(0, hashIdx) : rawName).trim().slice(0, 50) || 'Anonymous';
     let tripcode = null;
-    if (!board.forced_anon && hashIdx >= 0 && rawName.length > hashIdx + 1) {
+    if (!identified && !board.forced_anon && hashIdx >= 0 && rawName.length > hashIdx + 1) {
       const secure = rawName[hashIdx + 1] === '#';
       const pass = rawName.slice(hashIdx + (secure ? 2 : 1));
       if (pass) {
@@ -552,10 +589,10 @@ export function createServer(opts) {
     const body = String(req.body.body || '').replace(/\r\n/g, '\n').trim().slice(0, 4000);
     const deletePw = String(req.body.password || '').slice(0, 64);
     // Staff capcode: logged-in staff tick "post as staff" to get a verified tag.
-    const capcode = req.admin && req.body.capcode ? (req.admin.role === 'owner' ? 'Admin' : 'Mod') : null;
+    const capcode = moderating && req.body.capcode ? (req.admin.role === 'owner' ? 'Admin' : req.admin.memberships?.some((m) => m.board === board.slug && m.role === 'owner') ? 'Board Owner' : 'Mod') : null;
 
     // --- cooldowns (thread/reply per board, uploads site-wide); board settings override site defaults ---
-    if (!req.admin) {
+    if (!moderating) {
       const cd = (kind === 'thread' ? board.thread_cooldown : board.reply_cooldown) ?? num(`cooldown_${kind}_sec`);
       const waited = (now - rates.last(`${kind}:${board.slug}:${ipHash}`)) / 1000;
       if (cd > 0 && waited < cd) return bail(`Please wait ${Math.ceil(cd - waited)} more seconds before posting another ${kind} here.`, 429);
@@ -569,7 +606,7 @@ export function createServer(opts) {
       thread = db.prepare('SELECT * FROM posts WHERE id = ? AND board = ? AND thread_id IS NULL').get(threadId, board.slug);
       if (!thread) return bail('Thread not found.', 404);
       if (thread.archived) return bail('This thread is archived and read-only.', 403);
-      if (thread.locked && !req.admin) return bail('This thread is locked.', 403);
+      if (thread.locked && !moderating) return bail('This thread is locked.', 403);
     }
     // --- per-board posting rules ---
     if (board.text_only && req.file) return bail('This is a text-only board; files are not allowed.');
@@ -592,7 +629,7 @@ export function createServer(opts) {
     };
 
     // --- spam heuristics (staff are exempt) ---
-    if (!req.admin) {
+    if (!moderating) {
       const maxLinks = num('max_links');
       if (maxLinks > 0 && countLinks(`${subject}\n${body}`) > maxLinks) {
         return bail(`Too many links (max ${maxLinks} per post).`, 403);
@@ -615,7 +652,7 @@ export function createServer(opts) {
     }
 
     // --- keyword rules ---
-    const matches = req.admin ? [] : mod.matchFilters(`${name}\n${subject}\n${body}`);
+    const matches = moderating ? [] : mod.matchFilters(`${name}\n${subject}\n${body}`);
     const describe = (list) => list.map((f) => `"${f.pattern}"${f.is_regex ? ' (regex)' : ''}`).join(', ');
     const blocking = matches.filter((f) => f.action === 'block');
     if (blocking.length) return reject(describe(blocking), 'Your post was blocked by a content filter.');
@@ -650,20 +687,23 @@ export function createServer(opts) {
     const fileOrig = req.file ? req.file.originalname.slice(0, 100) : null;
     const fileSize = req.file?.size ?? null;
 
-    const country = board.country_flags ? mod.countryOf(req) : null;
+    const country = board.country_flags && !req.isTor ? mod.countryOf(req) : null;
     const r = db.prepare(`INSERT INTO posts (board, thread_id, name, subject, body, file, file_mime, file_orig, file_size, ip_hash,
                             created, bumped, capcode, delete_hash, file_phash, tripcode, spoiler, sage, country)
                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(board.slug, thread?.id ?? null, name, subject, body, null, mime, fileOrig, fileSize, ipHash, now, now,
         capcode, deletePw.length >= 4 ? hashDeletePw(deletePw) : null, phash, tripcode, req.file ? spoiler : 0, sage ? 1 : 0, country);
     const id = Number(r.lastInsertRowid);
+    if (req.isTor) db.prepare('UPDATE posts SET is_tor = 1 WHERE id = ?').run(id);
+    if (identified) db.prepare('UPDATE posts SET user_id = ?, account_verified = 1, account_badge = ? WHERE id = ?').run(req.admin.id, req.admin.donor ? req.admin.donor_label || 'Donor' : null, id);
     if (board.poster_ids) {
       // Per-thread poster ID: same IP gets the same ID within one thread, different IDs across threads.
-      const pid = crypto.createHmac('sha256', serverSecret(db)).update(`${normIp(req.ip)}:${thread?.id ?? id}`).digest('base64url').slice(0, 8);
+      const pid = crypto.createHmac('sha256', serverSecret(db)).update(`${req.isTor ? req.torClient || normIp(req.ip) : normIp(req.ip)}:${thread?.id ?? id}`).digest('base64url').slice(0, 8);
       db.prepare('UPDATE posts SET poster_id = ? WHERE id = ?').run(pid, id);
     }
     rates.hit(`${kind}:${board.slug}:${ipHash}`, now);
     rates.hit(`board:${board.slug}`, now);
+    if (req.isTor) { rates.hit(`tor-client:${req.torClient}`, now); rates.hit(`tor-exit:${normIp(req.ip)}`, now); }
     if (req.file) rates.hit(`upload:${ipHash}`, now);
     if (normalizeText(body).length >= 15) recentText.set(textHash(body), now);
 
@@ -706,6 +746,7 @@ export function createServer(opts) {
       }
     }
 
+    if (logging && req.isTor) db.prepare('UPDATE post_logs SET is_tor = 1 WHERE post_id = ?').run(id);
     if (thread) {
       const bump = !sage && thread.reply_count < (board.bump_limit || bumpLimit);
       db.prepare(`UPDATE posts SET reply_count = reply_count + 1 ${bump ? ', bumped = ?' : ''} WHERE id = ?`)
@@ -745,7 +786,7 @@ export function createServer(opts) {
     const text = String(req.body.text || '').trim().slice(0, 2000);
     if (text.length < 10) return fail(req, res, 'Please explain why the ban should be lifted.');
     db.prepare('INSERT INTO appeals (ban_id, text, ip, created) VALUES (?, ?, ?, ?)').run(ban.id, text, normIp(req.ip), Date.now());
-    mod.createAlert({ kind: 'appeal', detail: `appeal for ban #${ban.id} (${ban.kind} ${ban.value}: ${ban.reason})`, excerpt: text,
+    mod.createAlert({ kind: 'appeal', board: ban.board || null, detail: `appeal for ban #${ban.id} (${ban.kind}: ${ban.reason})`, excerpt: text,
       ip: getSettings(db).logging_enabled === '1' ? normIp(req.ip) : null });
     render(req, res, 'Appeal sent', V.messagePage('Your appeal has been sent to the moderators. Check back on this page for the result.', '/'));
   });

@@ -67,7 +67,7 @@
       ['volume', 'range', 0.5, 'Default volume', '', { min: 0, max: 1, step: 0.05 }],
     ]],
     ['Miscellaneous', [
-      ['theme', 'select', 'yotsuba-b', 'Theme', '', { options: [['yotsuba', 'Yotsuba'], ['yotsuba-b', 'Yotsuba B'], ['tomorrow', 'Tomorrow (dark)']] }],
+      ['theme', 'select', 'site', 'Theme', '', { options: [['site', t('Site default')], ...(window.YOTSUBA_APPEARANCE?.themes || [['yotsuba-b', 'Yotsuba B']])] }],
       ['relativeDates', 'bool', false, 'Relative dates', 'Show "5 minutes ago" (hover for the exact time).'],
       ['localTime', 'bool', true, 'Local time', 'Show dates in your time zone instead of UTC.'],
       ['customCSS', 'textarea', '', 'Custom CSS', 'Applied to every page.'],
@@ -110,6 +110,22 @@
   const threadId = thread ? parts[3] : null;
   const mainForm = $('#postform');
   const root = document.documentElement;
+
+  const ageDialog = $('.nsfw-dialog');
+  if (ageDialog) {
+    $('.nsfw-leave', ageDialog)?.focus();
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') { event.preventDefault(); location.assign('/'); return; }
+      if (event.key !== 'Tab') return;
+      const controls = $$('a[href], button, input:not([type="hidden"])', ageDialog).filter((element) => !element.disabled);
+      const first = controls[0], last = controls.at(-1);
+      if (event.shiftKey && (document.activeElement === first || !ageDialog.contains(document.activeElement))) {
+        event.preventDefault(); last?.focus();
+      } else if (!event.shiftKey && (document.activeElement === last || !ageDialog.contains(document.activeElement))) {
+        event.preventDefault(); first?.focus();
+      }
+    });
+  }
 
   // ======================================================================
   // Settings panel
@@ -176,13 +192,48 @@
   // Miscellaneous: theme, custom CSS, dates, announcement
   // ======================================================================
   const applyTheme = () => {
-    root.dataset.theme = ['yotsuba', 'yotsuba-b', 'tomorrow'].includes(prefs.theme) ? prefs.theme : 'yotsuba-b';
-    if ($('#bottom-theme')) $('#bottom-theme').value = root.dataset.theme;
+    const available = window.YOTSUBA_APPEARANCE?.themes || [['yotsuba-b', 'Yotsuba B']];
+    const preference = available.some(([key]) => key === prefs.theme) ? prefs.theme : 'site';
+    root.dataset.themePreference = preference;
+    root.dataset.theme = preference === 'site' ? (window.YOTSUBA_APPEARANCE?.defaultTheme || 'yotsuba-b') : preference;
+    if ($('#bottom-theme')) $('#bottom-theme').value = preference;
     const setting = $('[data-pref="theme"]');
-    if (setting) setting.value = root.dataset.theme;
+    if (setting) setting.value = preference;
   };
   $('#bottom-theme')?.addEventListener('change', (e) => setPref('theme', e.target.value));
   applyTheme(); onPref('theme', applyTheme);
+
+  const appearanceForm = $('.appearance-editor');
+  if (appearanceForm) {
+    const preview = $('.appearance-preview', appearanceForm);
+    const field = (name) => appearanceForm.elements.namedItem(name);
+    const updatePreview = () => {
+      const theme = field('default_theme').value;
+      preview.dataset.theme = theme;
+      for (const [key, color] of Object.entries(window.YOTSUBA_APPEARANCE.palettes[theme])) {
+        preview.style.setProperty(`--${key}`, field('custom_colors').checked ? field(`color_${key}`).value : color);
+      }
+      for (const key of ['panel_padding', 'post_padding', 'post_gap', 'radius', 'font_size', 'catalog_size', 'page_padding']) {
+        const element = field(key);
+        const value = Math.min(Number(element.max), Math.max(Number(element.min), Number(element.value) || Number(element.min)));
+        preview.style.setProperty(`--site-${key.replaceAll('_', '-')}`, `${value}px`);
+      }
+      preview.style.lineHeight = Math.min(2, Math.max(1.2, Number(field('line_height').value) || 1.4));
+      preview.style.fontFamily = { sans: 'Arial, Helvetica, sans-serif', serif: 'Georgia, serif', mono: 'Consolas, monospace' }[field('font_family').value];
+      $('#appearance-preview-size').textContent = `Board width: ${field('page_width').value}px ? Content width: ${field('content_width').value}px. Full page widths apply after saving; this preview shows colors, spacing and text.`;
+    };
+    const resetColors = () => {
+      const palette = window.YOTSUBA_APPEARANCE.palettes[field('default_theme').value];
+      for (const [key, color] of Object.entries(palette)) field(`color_${key}`).value = color;
+      updatePreview();
+    };
+    $('#appearance-reset-colors').addEventListener('click', resetColors);
+    appearanceForm.addEventListener('input', (event) => {
+      if (event.target.name === 'default_theme' && !field('custom_colors').checked) resetColors();
+      updatePreview();
+    });
+    updatePreview();
+  }
 
   const customStyle = document.createElement('style');
   customStyle.id = 'custom-css';

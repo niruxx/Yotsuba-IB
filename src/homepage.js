@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import multer from 'multer';
-import { can } from './db.js';
+import { can, hiddenBoardSql } from './db.js';
 
 export const SECTION_TYPES = {
   intro: 'Introduction box',
@@ -87,7 +87,7 @@ function saveHomepage(db, cfg) {
 // Everything the home page can show, gathered in one place. Hidden boards are excluded for visitors.
 export function homepageData(db, req, cfg) {
   const now = Date.now();
-  const vis = req.admin ? '' : 'AND b.hidden = 0';
+  const vis = hiddenBoardSql(req.admin);
   const boards = db.prepare(`SELECT b.slug, b.title, b.bio, b.category, b.nsfw, b.hidden,
       (SELECT COUNT(*) FROM posts p WHERE p.board = b.slug) AS posts,
       (SELECT COUNT(*) FROM posts p WHERE p.board = b.slug AND p.created > ?) AS pph,
