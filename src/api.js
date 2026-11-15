@@ -1,3 +1,4 @@
+import { attachmentUrl } from './attachments.js';
 // Read-only JSON API, modelled loosely on 4chan's (https://github.com/4chan/4chan-API).
 // Hidden boards are excluded. Posts are returned as raw text ("com") plus metadata; no IPs or hashes.
 //
@@ -43,7 +44,13 @@ function postJson(p, board) {
   return out;
 }
 
-export function registerApi(app, { db, getVisibleBoard, listBoards }) {
+export function registerApi(app, { db, getVisibleBoard, listBoards, attachments }) {
+  const serialize = (post, board) => ({ ...postJson(post, board), attachments: attachments.decorate(post).attachments.map((file) => ({
+    id: file.id, filename: post.spoiler ? 'spoiler' : file.file_orig, ext: EXT[file.file_mime] || '', fsize: file.file_size,
+    w: file.width, h: file.height, filedeleted: file.file ? undefined : 1,
+    file_url: file.file ? attachmentUrl(file.id) : undefined, thumb_url: file.file && file.thumb ? attachmentUrl(file.id, true) : undefined,
+    spoiler: post.spoiler ? 1 : undefined,
+  })) });
   const api = (fn) => (req, res, next) => {
     res.set({ 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'public, max-age=10' });
     return fn(req, res, next);
@@ -52,7 +59,8 @@ export function registerApi(app, { db, getVisibleBoard, listBoards }) {
     const b = getVisibleBoard({ admin: null }, req.params.board);
     return b && !b.hidden ? b : null;
   };
-  const imageCount = db.prepare('SELECT COUNT(*) AS n FROM posts WHERE thread_id = ? AND file IS NOT NULL');
+  const imageCount = db.prepare(`SELECT (SELECT COUNT(*) FROM posts WHERE thread_id = :thread AND file IS NOT NULL) +
+    (SELECT COUNT(*) FROM attachments a JOIN posts p ON p.id = a.post_id WHERE (p.thread_id = :thread OR p.id = :thread) AND a.file IS NOT NULL) AS n`);
 
   app.get('/api/boards.json', api((req, res) => {
     const boards = listBoards({ admin: null }).map((b) => {
@@ -97,9 +105,9 @@ export function registerApi(app, { db, getVisibleBoard, listBoards }) {
       const pageNo = Math.floor(i / perPage);
       if (!pages[pageNo]) pages[pageNo] = { page: pageNo + 1, threads: [] };
       pages[pageNo].threads.push({
-        ...postJson(op, board),
-        images: imageCount.get(op.id).n,
-        last_replies: lastReplies.all(op.id).map((r) => postJson(r, board)),
+        ...serialize(op, board),
+        images: imageCount.get({ thread: op.id }).n,
+        last_replies: lastReplies.all(op.id).map((r) => serialize(r, board)),
       });
     });
     res.json(pages);
@@ -111,7 +119,7 @@ export function registerApi(app, { db, getVisibleBoard, listBoards }) {
     const op = db.prepare('SELECT * FROM posts WHERE id = ? AND board = ? AND thread_id IS NULL').get(parseInt(req.params.id, 10), board.slug);
     if (!op) return res.status(404).json({ error: 'thread not found' });
     const replies = db.prepare('SELECT * FROM posts WHERE thread_id = ? ORDER BY id').all(op.id);
-    res.json({ posts: [{ ...postJson(op, board), images: imageCount.get(op.id).n }, ...replies.map((r) => postJson(r, board))] });
+    res.json({ posts: [{ ...serialize(op, board), images: imageCount.get({ thread: op.id }).n }, ...replies.map((r) => serialize(r, board))] });
   }));
 
   app.get('/api/:board/archive.json', api((req, res, next) => {

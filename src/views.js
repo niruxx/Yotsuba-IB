@@ -1,15 +1,17 @@
+import { attachmentUrl } from './attachments.js';
 import {
   esc, formatBody, fmtSize, fmtDate, mediaUrl, thumbUrl, quotedIds, flagEmoji, idColor,
 } from './format.js';
+import { t, LANGUAGES, CATALOGS } from './i18n.js';
 
 // Applied before first paint so the chosen theme doesn't flash.
 const THEME_BOOT = `<script>try{const p=JSON.parse(localStorage.getItem('prefs')||'{}');
 document.documentElement.dataset.theme=p.theme||'yotsuba-b';}catch{}</script>`;
 
-export function layout({ title, siteName, admin, boards = [], alertCount = null, body, announcement = '', hasFaq = false, ctx = {}, birthday = null, labels = {} }) {
+export function layout({ title, siteName, admin, boards = [], alertCount = null, body, announcement = '', hasFaq = false, ctx = {}, birthday = null, labels = {}, language = 'en', destination = '/' }) {
   const L = { nav_search: 'search', nav_settings: 'settings', nav_admin: 'admin', footer: 'Powered by Yotsuba-IB', ...labels };
   return `<!DOCTYPE html>
-<html lang="en" data-theme="yotsuba-b"${birthday ? ` class="birthday" style="--hat-color:${esc(birthday.color)};--hat-url:url(/static/hats/${esc(birthday.hat)}.svg)"` : ''}><head>
+<html lang="${language}" data-theme="yotsuba-b"${birthday ? ` class="birthday" style="--hat-color:${esc(birthday.color)};--hat-url:url(/static/hats/${esc(birthday.hat)}.svg)"` : ''}><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(title)}</title>
 ${THEME_BOOT}
@@ -19,7 +21,7 @@ ${THEME_BOOT}
   <a href="/" class="sitename">${esc(siteName)}</a>
   <span class="boardnav">[ ${boards.map((b) => `<a href="/${esc(b.slug)}/" title="${esc(b.title)}"${b.hidden ? ' class="hiddenboard"' : ''}>${esc(b.slug)}</a>`).join(' / ')} ]</span>
   <span class="right">
-    <a href="/search">${esc(L.nav_search)}</a> · <a href="#" id="open-settings">${esc(L.nav_settings)}</a>
+    <a href="/search">${esc(t(L.nav_search))}</a> · <a href="#" id="open-settings">${esc(t(L.nav_settings))}</a>
     ${admin ? ` · ${alertCount !== null
     ? `<a href="/admin/alerts" class="alertbadge${alertCount ? ' hot' : ''}" id="alertbadge">alerts (<span id="alertcount">${alertCount}</span>)</a> · ` : ''}<a href="/admin">${esc(L.nav_admin)}</a> · <form method="post" action="/admin/logout" class="inline"><button class="linkbtn">logout</button></form>` : ''}
   </span>
@@ -29,7 +31,19 @@ ${announcement.trim() ? `<div class="announcement" data-hash="${esc(simpleHash(a
 <div id="settings-panel" class="settings-panel" hidden></div>
 <div id="watcher" hidden><div class="w-head">Watched threads <a href="#" id="watcher-toggle">[–]</a></div><ul id="watcher-list"></ul></div>
 ${body}
+<nav class="bottombar" aria-label="${esc(t('Boards'))}">
+  <span class="boardnav">[ ${boards.map((b) => `<a href="/${esc(b.slug)}/" title="${esc(b.title)}"${b.hidden ? ' class="hiddenboard"' : ''}>${esc(b.slug)}</a>`).join(' / ')} ]</span>
+  <div class="bottom-controls">
+    <label>${esc(t('Theme'))} <select id="bottom-theme" aria-label="${esc(t('Theme'))}"><option value="yotsuba">Yotsuba</option><option value="yotsuba-b" selected>Yotsuba B</option><option value="tomorrow">${esc(t('Tomorrow (dark)'))}</option></select></label>
+    <form method="post" action="/language" class="inline">
+      <input type="hidden" name="destination" value="${esc(destination)}">
+      <label>${esc(t('Language'))} <select name="language" aria-label="${esc(t('Language'))}">${Object.entries(LANGUAGES).map(([key, name]) => `<option value="${key}"${key === language ? ' selected' : ''}>${name}</option>`).join('')}</select></label>
+      <button>${esc(t('Save settings'))}</button>
+    </form>
+  </div>
+</nav>
 <footer>${esc(L.footer)}${hasFaq ? ' · <a href="/faq">FAQ</a>' : ''}</footer>
+<script>window.YOTSUBA_I18N=${JSON.stringify(CATALOGS[language] || {}).replace(/</g, '\\u003c')};</script>
 <script src="/static/app.js" defer></script>
 ${alertCount !== null ? `<div id="toasts"></div>
 <script>
@@ -68,21 +82,28 @@ function simpleHash(s) {
 
 function fileBlock(p) {
   if (!p.file) return p.file_orig ? '<div class="fileinfo"><em>File deleted.</em></div>' : '';
-  const src = mediaUrl(p.id, p.file_mime);
+  const src = p.attachment_id ? attachmentUrl(p.attachment_id) : mediaUrl(p.id, p.file_mime);
+  const thumbnail = p.attachment_id ? attachmentUrl(p.attachment_id, true) : thumbUrl(p.id);
   const dims = p.width && p.height ? `, ${p.width}x${p.height}` : '';
   const info = `<div class="fileinfo">File: <a href="${src}" target="_blank">${p.spoiler ? 'Spoiler Image' : esc(p.file_orig)}</a> (${fmtSize(p.file_size)}${dims})</div>`;
   const isVideo = p.file_mime.startsWith('video/');
   const thumb = p.spoiler
-    ? `<span class="media spoiler-img"${p.thumb ? ` data-thumb="${thumbUrl(p.id)}"` : ''}>Spoiler</span>`
-    : `<img class="media" src="${p.thumb ? thumbUrl(p.id) : src}" loading="lazy" alt="">${isVideo ? '<span class="playicon">▶</span>' : ''}`;
+    ? `<span class="media spoiler-img"${p.thumb ? ` data-thumb="${thumbnail}"` : ''}>Spoiler</span>`
+    : `<img class="media" src="${p.thumb ? thumbnail : src}" loading="lazy" alt="">${isVideo ? '<span class="playicon">▶</span>' : ''}`;
   return `${info}<a class="thumb${isVideo ? ' video' : ''}" href="${src}" data-full="${src}" data-type="${isVideo ? 'video' : 'image'}">${thumb}</a>`;
 }
+
+function postFiles(p) {
+  return fileBlock(p) + (p.attachments || []).map((file) => fileBlock({ ...p, ...file, attachment_id: file.id })).join('');
+}
+
+const hasFiles = (p) => !!p.file || p.attachments?.some((file) => file.file);
 
 export function renderPost(p, board, { isOp, admin, backlinks }) {
   const slug = board.slug;
   const links = backlinks?.get(p.id);
   return `<div class="post ${isOp ? 'op' : 'reply'}" id="p${p.id}" data-id="${p.id}" data-board="${esc(slug)}"${p.poster_id ? ` data-poster="${esc(p.poster_id)}"` : ''}${p.tripcode ? ` data-trip="${esc(p.tripcode)}"` : ''} data-name="${esc(p.name)}">
-  ${isOp ? fileBlock(p) : ''}
+  ${isOp ? postFiles(p) : ''}
   <div class="postinfo">
     <a href="#" class="hide-post" title="Hide this post">[–]</a>
     ${p.subject ? `<span class="subject">${esc(p.subject)}</span>` : ''}
@@ -98,7 +119,7 @@ export function renderPost(p, board, { isOp, admin, backlinks }) {
     ${p.delete_hash ? `<details class="report"><summary>[delete]</summary>
       <form method="post" action="/${slug}/delete" class="selfdelete"><input type="hidden" name="id" value="${p.id}">
       <input type="password" name="password" required placeholder="deletion password" class="delpw">
-      ${p.file ? '<label><input type="checkbox" name="file_only"> file only</label>' : ''} <button>Delete</button></form>
+      ${hasFiles(p) ? '<label><input type="checkbox" name="file_only"> file only</label>' : ''} <button>Delete</button></form>
     </details>` : ''}
     <details class="report"><summary>[report]</summary>
       <form method="post" action="/${slug}/report"><input type="hidden" name="id" value="${p.id}">
@@ -107,7 +128,7 @@ export function renderPost(p, board, { isOp, admin, backlinks }) {
     ${admin ? staffControls(p, isOp, admin) : ''}
     ${links?.length ? `<span class="backlinks">${links.map((id) => `<a class="quotelink" data-board="${slug}" data-id="${id}" href="#p${id}">&gt;&gt;${id}</a>`).join(' ')}</span>` : ''}
   </div>
-  ${isOp ? '' : fileBlock(p)}
+  ${isOp ? '' : postFiles(p)}
   <blockquote>${formatBody(p.body, slug)}</blockquote>
 </div>`;
 }
@@ -131,7 +152,7 @@ function staffControls(p, isOp, caps) {
   const opts = [];
   if (caps.del) {
     opts.push(['delete', 'Delete post']);
-    if (p.file) opts.push(['delete_file', 'Delete file only']);
+    if (hasFiles(p)) opts.push(['delete_file', 'Delete attached files']);
     if (isOp) {
       opts.push(p.sticky ? ['unsticky', 'Unsticky'] : ['sticky', 'Sticky']);
       opts.push(p.locked ? ['unlock', 'Unlock'] : ['lock', 'Lock']);
@@ -140,7 +161,7 @@ function staffControls(p, isOp, caps) {
   }
   if (caps.ban) {
     opts.push(['ban', 'Ban poster…']);
-    if (p.file) opts.push(['ban_file', 'Ban this file (removes all copies)']);
+    if (hasFiles(p)) opts.push(['ban_file', 'Ban attached files (removes all copies)']);
   }
   return `<form method="post" action="/admin/post-action" class="inline staffctl"
     onsubmit="const s=this.elements.action; return s.value==='ban' || s.value==='move' || confirm(s.selectedOptions[0].text + ' – post ${p.id}?')">
@@ -152,18 +173,19 @@ export function postForm(board, threadId, maxMb, loggedIn = false) {
   return `<form class="postform" id="postform" method="post" action="/${esc(board.slug)}/post" enctype="multipart/form-data">
   ${threadId ? `<input type="hidden" name="thread" value="${threadId}">` : ''}
   <table>
-    ${board.forced_anon ? '' : '<tr><th>Name</th><td><input name="name" placeholder="Anonymous" maxlength="80" title="Name#password for a tripcode"></td></tr>'}
-    <tr><th>Options</th><td><input name="options" maxlength="40" placeholder="sage / nonoko"></td></tr>
-    ${threadId ? '' : `<tr><th>Subject</th><td><input name="subject" maxlength="100"${board.require_subject ? ' required' : ''}></td></tr>`}
-    <tr><th>Comment</th><td><textarea name="body" rows="5" maxlength="4000" placeholder="Comment"></textarea></td></tr>
-    ${board.text_only ? '' : `<tr><th>File</th><td><input type="file" name="file" accept="${acceptFor(board)}">
-      <label class="inline-check"><input type="checkbox" name="spoiler"> Spoiler</label>
+    ${board.forced_anon ? '' : `<tr><th>${esc(t('Name'))}</th><td><input name="name" placeholder="${esc(t('Anonymous'))}" maxlength="80" title="Name#password for a tripcode"></td></tr>`}
+    <tr><th>${esc(t('Options'))}</th><td><input name="options" maxlength="40" placeholder="sage / nonoko"></td></tr>
+    ${threadId ? '' : `<tr><th>${esc(t('Subject'))}</th><td><input name="subject" maxlength="100"${board.require_subject ? ' required' : ''}></td></tr>`}
+    <tr><th>${esc(t('Comment'))}</th><td><textarea name="body" rows="5" maxlength="4000" placeholder="${esc(t('Comment'))}"></textarea></td></tr>
+    ${board.text_only ? '' : `<tr><th>${esc(t('File'))}</th><td><input type="file" name="file" multiple accept="${acceptFor(board)}">
+      <label class="inline-check"><input type="checkbox" name="spoiler"> ${esc(t('Spoiler'))}</label>
       <small>max ${maxMb} MB · ${typesFor(board).join(' ')}${threadId ? '' : ' · required for new threads'}</small></td></tr>`}
-    <tr><th>Password</th><td><input type="password" name="password" class="delpw" maxlength="64" autocomplete="off">
+    <tr><th>${esc(t('Password'))}</th><td><input type="password" name="password" class="delpw" maxlength="64" autocomplete="off">
       <small>for deleting your post later (saved in this browser)</small></td></tr>
-    ${loggedIn ? '<tr><th>Staff</th><td><label><input type="checkbox" name="capcode"> Post with staff capcode</label></td></tr>' : ''}
-    <tr><th></th><td><button>${threadId ? 'Post reply' : 'New thread'}</button>
+    ${loggedIn ? `<tr><th>${esc(t('Staff'))}</th><td><label><input type="checkbox" name="capcode"> Post with staff capcode</label></td></tr>` : ''}
+    <tr><th></th><td><button>${esc(t(threadId ? 'Post reply' : 'New thread'))}</button>
       <small class="formhelp">[spoiler]…[/spoiler] · [code]…[/code] · &gt;&gt;123 · &gt;&gt;&gt;/board/123</small></td></tr>
+  <!--captcha-->
   </table>
 </form>`;
 }
@@ -178,14 +200,14 @@ const acceptFor = (board) => typesFor(board).map((t) => ALL_TYPES[t]).join(',');
 const hiddenNote = (board) => (board.hidden ? '<p class="error">This board is hidden. Only logged-in staff can see it.</p>' : '');
 
 function boardHeader(board, current, banner = null) {
-  const tab = (href, label, key) => (current === key ? `<strong>[${label}]</strong>` : `<a href="${href}">[${label}]</a>`);
+  const tab = (href, label, key) => (current === key ? `<strong>[${esc(t(label))}]</strong>` : `<a href="${href}">[${esc(t(label))}]</a>`);
   return `<header class="hero">${banner ? `<img class="banner" src="/banner/${banner}" alt="">` : ''}
   <h1>/${esc(board.slug)}/ - ${esc(board.title)}${board.nsfw ? ' <small class="nsfw">NSFW</small>' : ''}</h1>${hiddenNote(board)}
   ${board.bio ? `<p class="bio">${esc(board.bio)}</p>` : ''}</header>
 <nav class="boardtabs">${tab(`/${board.slug}/`, 'Index', 'index')} ${tab(`/${board.slug}/catalog`, 'Catalog', 'catalog')}
-  ${tab(`/${board.slug}/archive`, 'Archive', 'archive')} <a href="/search?board=${esc(board.slug)}">[Search]</a>
+  ${tab(`/${board.slug}/archive`, 'Archive', 'archive')} <a href="/search?board=${esc(board.slug)}">[${esc(t('Search'))}]</a>
   ${board.hidden ? '' : `<a href="/${esc(board.slug)}/rss.xml">[RSS]</a>`}</nav>
-${board.rules?.trim() ? `<details class="rules box"><summary>Board rules</summary><div>${esc(board.rules).replace(/\n/g, '<br>')}</div></details>` : ''}`;
+${board.rules?.trim() ? `<details class="rules box"><summary>${esc(t('Board rules'))}</summary><div>${esc(board.rules).replace(/\n/g, '<br>')}</div></details>` : ''}`;
 }
 
 export function boardPage(board, threads, { admin, loggedIn, page, pages, maxMb, banner }) {
@@ -199,7 +221,7 @@ ${threads.map(({ op, replies, omitted }) => {
   ${omitted ? `<div class="omitted">${omitted} replies omitted. <a href="/${board.slug}/thread/${op.id}" class="expand-thread" data-thread="${op.id}">View thread</a></div>` : ''}
   ${replies.map((r) => renderPost(r, board, { isOp: false, admin, backlinks })).join('')}
 </div><hr>`;
-  }).join('\n') || '<p class="empty">No threads yet. Start one!</p>'}
+  }).join('\n') || `<p class="empty">${esc(t('No threads yet. Start one!'))}</p>`}
 <div class="pager">${Array.from({ length: pages }, (_, i) =>
     i === page ? `[${i}]` : `<a href="/${board.slug}/?page=${i}">[${i}]</a>`).join(' ')}</div>`;
 }
@@ -208,7 +230,7 @@ export function threadPage(board, op, replies, { admin, loggedIn, maxMb, banner 
   const backlinks = backlinkMap([op, ...replies]);
   const canReply = !op.archived && (!op.locked || admin || loggedIn);
   return `${boardHeader(board, 'thread', banner)}
-<p><a href="/${board.slug}/">[Return]</a> <a href="/${board.slug}/catalog">[Catalog]</a> <a href="#bottom">[Bottom]</a>
+<p><a href="/${board.slug}/">[${esc(t('Return'))}]</a> <a href="/${board.slug}/catalog">[${esc(t('Catalog'))}]</a> <a href="#bottom">[${esc(t('Bottom'))}]</a>
   ${canReply ? '<a href="#reply" class="reply-link reply-button">[Post a Reply]</a>' : ''}</p>
 ${op.archived ? '<p class="error">This thread is archived. It is read-only and will be deleted later.</p>'
     : canReply ? postForm(board, op.id, maxMb, loggedIn) : '<p class="error">This thread is locked. You cannot reply.</p>'}
@@ -234,7 +256,7 @@ ${threads.map((t) => `<a class="ctile" href="/${board.slug}/thread/${t.id}" data
   ${t.file && !t.spoiler ? `<img src="${t.thumb ? thumbUrl(t.id) : mediaUrl(t.id, t.file_mime)}" loading="lazy" alt="">` : `<span class="spoiler-img">${t.spoiler ? 'Spoiler' : 'No image'}</span>`}
   <div class="cmeta">R: <b>${t.reply_count}</b> / I: <b>${t.images}</b>${t.sticky ? ' · sticky' : ''}${t.locked ? ' · locked' : ''}</div>
   <div class="ctext">${t.subject ? `<b>${esc(t.subject)}</b>: ` : ''}${esc(t.body.slice(0, 150))}</div>
-</a>`).join('') || '<p class="empty">No threads yet.</p>'}
+</a>`).join('') || `<p class="empty">${esc(t('No threads yet.'))}</p>`}
 </div>`;
 }
 
@@ -303,7 +325,7 @@ export function bannedPage(ban, appeal) {
   ${appeal?.status === 'open' ? `<p>Your appeal from ${fmtDate(appeal.created)} UTC is waiting for a moderator.</p>`
     : appeal?.status === 'denied' ? `<p class="error">Your appeal was denied.${appeal.response ? ` Moderator's response: ${esc(appeal.response)}` : ''}</p>` : ''}
   ${appeal?.status === 'open' ? '' : `<form method="post" action="/appeal">
-    <input type="hidden" name="ban_id" value="${ban.id}">
+    <input type="hidden" name="ban_id" value="${ban.id}"><input type="hidden" name="board" value="${esc(ban.board || '')}">
     <label>Why should this ban be lifted? <textarea name="text" rows="5" required minlength="10" maxlength="2000"></textarea></label>
     <button>Send appeal</button>
   </form>`}

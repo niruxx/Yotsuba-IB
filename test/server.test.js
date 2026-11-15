@@ -257,3 +257,70 @@ test('private board files, log relocation, logging warning and templates', async
   assert.ok(db.prepare('SELECT slug FROM boards WHERE slug = ?').get('tech'));
   assert.ok(db.prepare('SELECT id FROM admins WHERE role = ?').get('owner'));
 });
+
+
+test('adult presets for both styles create NSFW boards with entry warnings', async () => {
+  const { BOARD_TEMPLATES } = await import('../src/templates.js');
+  for (const key of ['4chan-adult', '8kun-adult']) {
+    assert.equal((await staffPost('/admin/templates', { template: key, mode: 'merge' })).status, 302);
+    for (const [slug] of BOARD_TEMPLATES[key].boards) {
+      assert.equal(db.prepare('SELECT nsfw FROM boards WHERE slug = ?').get(slug).nsfw, 1);
+      assert.ok(fs.existsSync(path.join(dir, 'boards', slug)));
+      const page = await (await fetch(`${base}/${slug}/`)).text();
+      assert.match(page, /NSFW warning/);
+      assert.match(page, /Continue to board/);
+    }
+  }
+  assert.equal(db.prepare('SELECT nsfw FROM boards WHERE slug = ?').get('tech').nsfw, 0);
+  assert.equal((await staffPost('/admin/templates', { template: '8kun-adult', mode: 'replace', confirm_replace: 'REPLACE' })).status, 302);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM boards WHERE nsfw = 0').get().n, 0);
+  assert.equal(JSON.parse(db.prepare("SELECT value FROM settings WHERE key = 'homepage'").get().value).layout, 'standard');
+});
+
+test('security: UTF-8 CSRF, board scope, scoped alerts and private caching', async () => {
+  const malformed = await staffPost('/admin/boards', { _csrf: '\u00e9'.repeat(csrf.length), slug: 'badcsrf', title: 'Bad' });
+  assert.equal(malformed.status, 403);
+  const adminPage = await get('/admin/boards');
+  assert.equal(adminPage.headers.get('cache-control'), 'private, no-store');
+  await staffPost('/admin/boards', { slug: 'scopea', title: 'Allowed board', visible: 'on' });
+  await staffPost('/admin/boards', { slug: 'scopeb', title: 'Other board', visible: 'on' });
+  await staffPost('/admin/filters', { pattern: 'scope-secret-token', action: 'block' });
+  db.prepare("UPDATE boards SET text_only = 1 WHERE slug IN ('scopea', 'scopeb')").run();
+  createAdmin(db, 'scoped', 'test-password', 'staff', ['manage_boards', 'view_alerts']);
+  db.prepare("UPDATE admins SET boards = 'scopea' WHERE username = 'scoped'").run();
+  const ownerCookie = cookie, ownerCsrf = csrf;
+  try {
+    const login = await fetch(base + '/admin/login', { method: 'POST', redirect: 'manual', body: form({ username: 'scoped', password: 'test-password' }) });
+    cookie = login.headers.get('set-cookie').split(';')[0];
+    const page = await (await get('/admin/boards')).text();
+    csrf = /name="_csrf" value="([a-f0-9]+)"/.exec(page)[1];
+    assert.match(page, /Allowed board/);
+    assert.doesNotMatch(page, /action="\/admin\/boards\/scopeb"/);
+    assert.equal((await staffPost('/admin/boards/scopeb', { title: 'Changed', visible: 'on' })).status, 403);
+    assert.equal((await staffPost('/admin/boards/scopeb', { action: 'delete' })).status, 403);
+    assert.equal((await staffPost('/admin/boards', { slug: 'outsider', title: 'Outside' })).status, 403);
+    assert.equal((await staffPost('/admin/boards/scopea', { title: 'Updated', visible: 'on', text_only: 'on' })).status, 302);
+    const controller = new AbortController();
+    const stream = await get('/admin/events', { signal: controller.signal });
+    const reader = stream.body.getReader();
+    try {
+      await reader.read(); // initial connection comment
+      assert.equal((await anonPost('scopeb', { body: 'scope-secret-token outside' })).status, 403);
+      assert.equal((await anonPost('scopea', { body: 'scope-secret-token allowed' })).status, 403);
+      const event = await Promise.race([
+        reader.read(),
+        new Promise((_, reject) => { const timer = setTimeout(() => reject(new Error('Missing scoped alert')), 3000); timer.unref(); }),
+      ]);
+      const payload = new TextDecoder().decode(event.value);
+      assert.match(payload, /"board":"scopea"/);
+      assert.doesNotMatch(payload, /scopeb|outside/);
+    } finally { controller.abort(); await reader.cancel().catch(() => {}); }
+    const insert = db.prepare("INSERT INTO alerts (kind, board, detail, created) VALUES ('report', ?, 'Scope test', ?)");
+    const own = Number(insert.run('scopea', Date.now()).lastInsertRowid);
+    const other = Number(insert.run('scopeb', Date.now()).lastInsertRowid);
+    assert.equal((await staffPost(`/admin/alerts/${other}`, { action: 'resolve' })).status, 403);
+    assert.equal((await staffPost('/admin/alerts-resolve-all', {})).status, 302);
+    assert.equal(db.prepare('SELECT status FROM alerts WHERE id = ?').get(own).status, 'resolved');
+    assert.equal(db.prepare('SELECT status FROM alerts WHERE id = ?').get(other).status, 'open');
+  } finally { cookie = ownerCookie; csrf = ownerCsrf; }
+});

@@ -60,7 +60,7 @@ ${rows.map((f) => `<tr><td class="content">${esc(f.pattern)}</td><td>${f.is_rege
 }
 
 function banRow(b, active) {
-  return `<tr><td>#${b.id}</td><td>${esc(b.kind)}</td><td>${esc(b.value)}</td>
+  return `<tr><td>#${b.id}</td><td>${esc(b.kind)}<br><small>${b.board ? `/${esc(b.board)}/` : 'site-wide'}</small></td><td>${esc(b.value)}</td>
   <td>${b.scope === 'access' ? '<strong>site access</strong>' : 'posting'}</td>
   <td class="content">${esc(b.reason)}${b.post_id ? `<br><small>post No.${b.post_id}</small>` : ''}</td>
   <td>${esc(b.created_by)}<br><small>${fmtDate(b.created)}</small></td>
@@ -68,7 +68,7 @@ function banRow(b, active) {
   <td>${active ? `<form method="post" action="/admin/bans/${b.id}/lift"><button class="linkbtn">lift</button></form>` : ''}</td></tr>`;
 }
 
-export function bansPage(a, { active, past, fileBans, appeals, prefill, geoSource, durations }, msg) {
+export function bansPage(a, { active, past, fileBans, appeals, prefill, geoSource, durations, boards = [] }, msg) {
   const head = '<tr><th>ID</th><th>Type</th><th>Value</th><th>Blocks</th><th>Reason</th><th>By</th><th>Expires (UTC)</th><th></th></tr>';
   return page(a, 'Bans', msg, `${appeals.length ? `<section class="box">
   <h2>Open appeals (${appeals.length})</h2>
@@ -90,6 +90,7 @@ export function bansPage(a, { active, past, fileBans, appeals, prefill, geoSourc
     ${prefill.ip ? '' : '<p class="error">No IP was logged for this post (post logging was off). Enter one manually or use a country/range ban.</p>'}` : ''}
   <form method="post" action="/admin/bans">
     ${prefill ? `<input type="hidden" name="post_id" value="${prefill.post_id}">` : ''}
+    <label>Board <select name="board">${a.role === 'owner' || !a.boardList?.length ? '<option value="">Entire site</option>' : ''}${boards.map((b) => `<option value="${esc(b.slug)}"${prefill?.board === b.slug ? ' selected' : ''}>/${esc(b.slug)}/</option>`).join('')}</select> <small>Board bans affect only that board, including its media.</small></label>
     <label>Type <select name="kind">
       <option value="ip">Single IP address</option>
       <option value="range">IP range (CIDR, e.g. 203.0.113.0/24)</option>

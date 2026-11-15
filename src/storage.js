@@ -23,6 +23,10 @@ export function createBoardStorage(dataDir, db) {
       name: post.name, ip, created: post.created, file: post.file_orig }, null, 2) + '\n';
     fs.writeFileSync(path.join(logs, `${post.id}.json.log.out`), record, { mode: 0o600 });
     if (post.file) fs.writeFileSync(path.join(logs, `${path.basename(post.file)}.log.out`), record, { mode: 0o600 });
+    for (const file of post.attachments || []) if (file.file) {
+      const detail = JSON.stringify({ ...JSON.parse(record), file: file.file_orig, attachment_id: file.id }, null, 2) + '\n';
+      fs.writeFileSync(path.join(logs, `${path.basename(file.file)}.log.out`), detail, { mode: 0o600 });
+    }
   }
   function walk(dir, visit) {
     if (!fs.existsSync(dir)) return;
@@ -65,7 +69,12 @@ export function createBoardStorage(dataDir, db) {
         post.file = path.relative(path.join(dataDir, 'uploads'), path.join(target, path.basename(post.file))).split(path.sep).join('/');
         db.prepare('UPDATE posts SET file = ? WHERE id = ?').run(post.file, post.id);
       }
+      for (const file of db.prepare('SELECT id, file FROM attachments WHERE post_id = ? AND file IS NOT NULL').all(post.id)) {
+        const moved = path.relative(path.join(dataDir, 'uploads'), path.join(target, path.basename(file.file))).split(path.sep).join('/');
+        db.prepare('UPDATE attachments SET file = ? WHERE id = ?').run(moved, file.id);
+      }
       post.board = board;
+      post.attachments = db.prepare('SELECT * FROM attachments WHERE post_id = ? ORDER BY id').all(post.id);
       fs.writeFileSync(path.join(target, `${post.id}.json`), JSON.stringify(post, null, 2), { mode: 0o600 });
     }
   }
@@ -90,6 +99,7 @@ export function createBoardStorage(dataDir, db) {
       }
     }
     // IPs are kept exclusively in private logs, never in post snapshots.
+    post.attachments = db.prepare('SELECT * FROM attachments WHERE post_id = ? ORDER BY id').all(post.id);
     fs.writeFileSync(path.join(dir, `${post.id}.json`), JSON.stringify(post, null, 2), { mode: 0o600 });
   }
   return { boardDir, threadDir, writePost, configureLogs, purgeLogs, moveThread };

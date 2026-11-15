@@ -109,7 +109,7 @@ git clone --depth 1 "$REPO_URL" "$INSTALL_DIR"
 git config --system --add safe.directory "$INSTALL_DIR" 2>/dev/null || true
 
 c_info "Installing npm packages"
-(cd "$INSTALL_DIR" && npm install --omit=dev --no-audit --no-fund)
+(cd "$INSTALL_DIR" && npm ci --omit=dev --no-audit --no-fund)
 
 mkdir -p "$DATA_DIR" "$CONF_DIR"
 chown -R "$SERVICE_USER:$SERVICE_USER" "$DATA_DIR"

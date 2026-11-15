@@ -1,3 +1,5 @@
+import { attachmentUrl } from './attachments.js';
+import { t } from './i18n.js';
 import { BOARD_TEMPLATES } from './templates.js';
 import { esc, fmtDate, fmtSize, mediaUrl } from './format.js';
 import { PERMISSIONS, can } from './db.js';
@@ -12,11 +14,11 @@ function nav(a) {
   if (can(a, 'manage_settings')) links.push(['/admin/settings', 'Settings'], ['/admin/homepage', 'Homepage']);
   if (a.role === 'owner') links.push(['/admin/accounts', 'Accounts'], ['/admin/audit', 'Staff activity']);
   links.push(['/admin/account', 'My account']);
-  return `<nav class="adminnav">${links.map(([h, t]) => `<a href="${h}">${t}</a>`).join(' · ')}</nav>`;
+  return `<nav class="adminnav">${links.map(([h, label]) => `<a href="${h}">${esc(t(label))}</a>`).join(' · ')}</nav>`;
 }
 
 export function page(a, title, msg, content) {
-  return `<header class="hero"><h1>${esc(title)}</h1></header>
+  return `<header class="hero"><h1>${esc(t(title))}</h1></header>
 ${nav(a)}
 ${msg ? `<p class="notice">${esc(msg)}</p>` : ''}
 ${content}`;
@@ -49,7 +51,7 @@ export function boardsPage(a, boards, msg) {
   ${a.role === 'owner' ? `<h2>Board templates</h2>
   <form method="post" action="/admin/templates">
   <label>Template <select name="template">${Object.entries(BOARD_TEMPLATES).map(([key, t]) => `<option value="${key}">${esc(t.title)} (${t.boards.length} boards)</option>`).join('')}</select></label>
-  <p>Curated starter board sets, not live imports. Merge adds missing boards to your existing layout and preserves existing board settings and posts.</p>
+  <p>Curated starter board sets, not live imports. Merge adds missing boards to your existing layout and preserves existing board settings and posts. Adult presets add only adult boards, all marked NSFW (18+) with entry warnings. Merge a starter preset followed by its adult preset to include both.</p>
   <label>Import mode <select name="mode"><option value="merge">Merge into existing layout</option><option value="replace">Overwrite all site settings and replace all boards</option></select></label>
   <p><strong>Replacement permanently removes every existing board and post and resets site settings and homepage design. Accounts, bans and moderation evidence are retained.</strong></p>
   <label>Type REPLACE for replacement <input name="confirm_replace" autocomplete="off"></label>
@@ -130,7 +132,7 @@ ${rows.map((r) => `<tr class="${r.live ? '' : 'gone'}">
   <td><a href="/admin/logs?${qs({ ip: r.ip })}">${esc(r.ip)}</a><br><small title="${esc(r.user_agent)}">${esc((r.user_agent || '').slice(0, 40))}</small></td>
   <td>${esc(r.name)}</td>
   <td class="content">${r.subject ? `<strong>${esc(r.subject)}</strong><br>` : ''}${esc(r.body).slice(0, 300)}</td>
-  <td>${r.file_orig ? `${r.file_live ? `<a href="${mediaUrl(r.post_id, r.file_mime)}" target="_blank" title="${esc(r.file)}">${esc(r.file_orig)}</a>` : esc(r.file_orig)}<br><small>${esc(r.file_mime)} · ${fmtSize(r.file_size)}</small>` : ''}</td>
+  <td>${r.file_orig ? `${r.file_live ? `<a href="${r.attachment_id ? attachmentUrl(r.attachment_id) : mediaUrl(r.post_id, r.file_mime)}" target="_blank" title="${esc(r.file)}">${esc(r.file_orig)}</a>` : esc(r.file_orig)}<br><small>${esc(r.file_mime)} · ${fmtSize(r.file_size)}</small>` : ''}</td>
 </tr>`).join('') || '<tr><td colspan="7"><em>No log entries.</em></td></tr>'}
 </table>
 ${pager('/admin/logs', filters, pageNo, hasMore)}`);
@@ -142,6 +144,8 @@ export function settingsPage(a, s, msg) {
   return page(a, 'Settings', msg, `<form class="box" method="post" action="/admin/settings">
   <label class="check"><input type="checkbox" name="logging_enabled" ${s.logging_enabled === '1' ? 'checked' : ''}>
     Post logging: record the IP address, user agent, content and upload of every new thread and reply</label>
+  <label class="check"><input type="checkbox" name="captcha_enabled" ${s.captcha_enabled === '1' ? 'checked' : ''}> Require image CAPTCHA for anonymous posting (requires sharp)</label>
+  <label>Maximum files per post <input type="number" name="max_files_per_post" min="1" max="4" value="${esc(s.max_files_per_post)}"> <small>Up to four files, each subject to the board size and type limits.</small></label>
   <p><strong>Warning:</strong> Disabling logging stops creation of log.out files and recording uploader IP addresses and names. You will have no uploader oversight or details for new posts. Existing logs remain until retention expires.</p>
   <label class="check"><input type="checkbox" name="confirm_disable_logging" value="1"> I understand the loss of uploader oversight when disabling logging</label>
   <label>Private log directory <input name="log_directory" value="${esc(s.log_directory)}" placeholder="blank: alongside posts"> <small>Absolute path or relative to the data directory. Must be private and writable. New logs use this location.</small></label>
@@ -185,8 +189,8 @@ export function accountsPage(a, accounts, msg) {
   return page(a, 'Accounts', msg, `<section class="box">
   <h2>Create staff account</h2>
   <form method="post" action="/admin/accounts">
-    <label>Username <input name="username" required maxlength="32" pattern="[A-Za-z0-9_.\\-]{2,32}"></label>
-    <label>Password <input name="password" type="password" required minlength="8"></label>
+    <label>${esc(t('Username'))} <input name="username" required maxlength="32" pattern="[A-Za-z0-9_.\\-]{2,32}"></label>
+    <label>${esc(t('Password'))} <input name="password" type="password" required minlength="8"></label>
     <fieldset><legend>Permissions</legend>${permChecks([])}</fieldset>
     <label>Limit to boards <input name="boards" placeholder="e.g. g, v (blank = all boards)" maxlength="300">
       <small>Board-scoped staff ("janitors") can only act on posts, alerts and logs of these boards.</small></label>
@@ -199,8 +203,8 @@ export function accountsPage(a, accounts, msg) {
     <h3>${esc(u.username)} <small>${esc(u.role)}${u.disabled ? ' · DISABLED' : ''}</small></h3>
     ${u.disabled ? `<p class="error">Disabled: ${esc(u.disabled_reason || '(no reason given)')}</p>` : ''}
     <form method="post" action="/admin/accounts/${u.id}">
-      <label>Username <input name="username" value="${esc(u.username)}" required maxlength="32" pattern="[A-Za-z0-9_.\\-]{2,32}"></label>
-      <label>New password <input name="password" type="password" minlength="8" placeholder="leave blank to keep"></label>
+      <label>${esc(t('Username'))} <input name="username" value="${esc(u.username)}" required maxlength="32" pattern="[A-Za-z0-9_.\\-]{2,32}"></label>
+      <label>${esc(t('New password'))} <input name="password" type="password" minlength="8" placeholder="leave blank to keep"></label>
       ${u.role === 'owner' ? '' : `<fieldset><legend>Permissions</legend>${permChecks(u.perms)}</fieldset>
       <label>Limit to boards <input name="boards" value="${esc(u.boards)}" placeholder="blank = all boards" maxlength="300"></label>`}
       <button name="action" value="save">Save</button>
@@ -231,19 +235,45 @@ ${pager('/admin/audit', filters, pageNo, hasMore)}`);
 
 export function myAccountPage(a, msg) {
   return page(a, 'My account', msg, `<form class="box" method="post" action="/admin/account">
-  <h2>Change password</h2>
-  <label>Current password <input name="current" type="password" required></label>
-  <label>New password <input name="password" type="password" required minlength="8"></label>
-  <button>Change password</button>
-</form>`);
+  <h2>${esc(t('Change password'))}</h2>
+  <label>${esc(t('Current password'))} <input name="current" type="password" required></label>
+  <label>${esc(t('New password'))} <input name="password" type="password" required minlength="8"></label>
+  <button>${esc(t('Change password'))}</button>
+  ${a.totp_secret ? `<label>${esc(t('Verification code'))} <input name="otp" autocomplete="one-time-code" required></label>` : ''}
+</form>
+<section class="box"><h2>${esc(t('Two-factor authentication'))}</h2>
+<p>${a.totp_secret ? 'Enabled. Login requires your password and a fresh authenticator code or a single-use recovery code.' : 'Use an authenticator app to protect your staff account.'}</p>
+<form method="post" action="/admin/account/2fa">
+<input type="hidden" name="action" value="${a.totp_secret ? 'disable' : 'start'}">
+<label>${esc(t('Current password'))} <input name="current" type="password" required autocomplete="current-password"></label>
+${a.totp_secret ? `<label>${esc(t('Verification code'))} <input name="otp" required autocomplete="one-time-code"></label>` : ''}
+<button>${esc(t(a.totp_secret ? 'Disable' : 'Enable'))}</button>
+</form></section>`);
+}
+
+export function twoFactorPage(a, secret) {
+  const uri = `otpauth://totp/${encodeURIComponent('Yotsuba-IB:' + a.username)}?secret=${secret}&issuer=Yotsuba-IB&algorithm=SHA1&digits=6&period=30`;
+  return page(a, 'Two-factor authentication', null, `<section class="box">
+  <p>Add this setup key to your authenticator app. Setup expires in ten minutes.</p><code>${esc(secret)}</code>
+  <p><a href="${esc(uri)}">Open authenticator app</a></p>
+  <form method="post" action="/admin/account/2fa"><input type="hidden" name="action" value="enable">
+  <label>${esc(t('Current password'))} <input name="current" type="password" required></label>
+  <label>${esc(t('Verification code'))} <input name="otp" inputmode="numeric" pattern="[0-9]{6}" required autocomplete="one-time-code"></label>
+  <button>${esc(t('Enable'))}</button></form></section>`);
+}
+export function recoveryPage(a, codes) {
+  return page(a, 'Two-factor authentication', null, `<section class="box"><h2>Save these recovery codes</h2>
+  <p>Each code can be used once instead of an authenticator code. These codes are shown only now; keep them offline in a safe place. Previously signed-in sessions have been revoked.</p>
+  <pre>${codes.map(esc).join('\n')}</pre><a href="/admin/account">${esc(t('My account'))}</a></section>`);
 }
 
 export function loginPage(error) {
-  return `<header class="hero"><h1>Admin login</h1></header>
+  return `<header class="hero"><h1>${esc(t('Admin login'))}</h1></header>
 <form class="box" method="post" action="/admin/login">
   ${error ? `<p class="error">${esc(error)}</p>` : ''}
-  <label>Username <input name="username" required></label>
-  <label>Password <input name="password" type="password" required></label>
-  <button>Log in</button>
+  <label>${esc(t('Username'))} <input name="username" required></label>
+  <label>${esc(t('Password'))} <input name="password" type="password" required></label>
+  <label>${esc(t('Authenticator or recovery code'))} <input name="otp" autocomplete="one-time-code" maxlength="32" placeholder="only if 2FA is enabled"></label>
+  <button>${esc(t('Log in'))}</button>
 </form>`;
 }

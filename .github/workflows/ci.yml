@@ -4,6 +4,9 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -16,7 +19,7 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg
-      - run: npm install --no-audit --no-fund
+      - run: npm ci --no-audit --no-fund
       - run: npm test
       - run: bash -n install.sh && bash -n update.sh && bash -n uninstall.sh
 

@@ -1,3 +1,4 @@
+import { t } from './i18n.js';
 import { esc, fmtSize, mediaUrl, thumbUrl } from './format.js';
 import { page } from './adminViews.js';
 import { SECTION_TYPES, LABELS } from './homepage.js';
@@ -79,7 +80,7 @@ function stats(s, L) {
 }
 
 export function homePage(cfg, data, siteName) {
-  const L = cfg.labels;
+  const L = Object.fromEntries(Object.entries(cfg.labels).map(([key, value]) => [key, t(value)]));
   const body = (s) => {
     switch (s.id) {
       case 'intro': return richText(s.body, siteName);
@@ -104,7 +105,7 @@ export function homePage(cfg, data, siteName) {
 }
 
 export function homepageEditor(a, cfg, msg) {
-  const L = cfg.labels;
+  const L = Object.fromEntries(Object.entries(cfg.labels).map(([key, value]) => [key, t(value)]));
   return page(a, 'Homepage', msg, `
 <section class="box">
   <h2>Quick presets</h2>
@@ -139,7 +140,7 @@ export function homepageEditor(a, cfg, msg) {
       <td><input type="checkbox" name="enabled_${s.id}" ${s.enabled ? 'checked' : ''}></td>
       <td><input type="number" name="order_${s.id}" value="${i + 1}" min="1" max="20" style="width:50px"></td>
       <td>${esc(SECTION_TYPES[s.id])}</td>
-      <td><input name="title_${s.id}" value="${esc(s.title)}" maxlength="100" placeholder="(no heading)">
+      <td><input name="title_${s.id}" value="${esc(t(s.title))}" maxlength="100" placeholder="(no heading)">
         ${'body' in s ? `<textarea name="body_${s.id}" rows="4" maxlength="5000" placeholder="text">${esc(s.body)}</textarea>` : ''}</td>
     </tr>`).join('')}
   </table>

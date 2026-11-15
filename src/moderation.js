@@ -2,7 +2,7 @@ import net from 'node:net';
 import fs from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
-import { can, getSettings } from './db.js';
+import { can, getSettings, parsePerms, parseBoards } from './db.js';
 import * as M from './moderationViews.js';
 import { perceptualHash, hamming } from './antispam.js';
 
@@ -85,10 +85,11 @@ export function createModeration({ db, geo, trustProxy }) {
   }
 
   // scope 'access': only bans that block viewing. scope 'post': every active ban.
-  function findBan(req, scope) {
+  function findBan(req, scope, board = '') {
     const ip = normIp(req.ip);
     let country;
     for (const ban of activeBans().rows) {
+      if (ban.board && ban.board !== board) continue;
       if (scope === 'access' && ban.scope !== 'access') continue;
       if (ban.kind === 'country') {
         if (country === undefined) country = countryOf(req);
@@ -130,9 +131,16 @@ export function createModeration({ db, geo, trustProxy }) {
     const alert = { id: Number(r.lastInsertRowid), kind: a.kind, board: a.board, post_id: a.post_id, thread_id: a.thread_id,
       detail: a.detail, excerpt: (a.excerpt ?? '').slice(0, 200) };
     const msg = `event: alert\ndata: ${JSON.stringify(alert)}\n\n`;
-    for (const c of clients) c.write(msg);
+    for (const c of clients) {
+      if (c.allowed(alert)) c.res.write(msg);
+    }
   }
-  setInterval(() => { for (const c of clients) c.write(': ping\n\n'); }, 25_000).unref();
+  setInterval(() => {
+    for (const c of clients) {
+      if (c.allowed()) c.res.write(': ping\n\n');
+      else { clients.delete(c); c.res.end(); }
+    }
+  }, 25_000).unref();
 
   return { findBan, countryOf, matchFilters, createAlert, invalidate, invalidateFilters, clients, hasGeo: !!geo };
 }
@@ -154,8 +162,16 @@ export function registerModeration(app, ctx) {
     res.set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
     res.flushHeaders();
     res.write(': connected\n\n');
-    mod.clients.add(res);
-    req.on('close', () => mod.clients.delete(res));
+    const client = { res, allowed: (alert) => {
+      const account = db.prepare(`SELECT a.* FROM admins a JOIN sessions s ON s.admin_id = a.id
+        WHERE s.token = ? AND s.expires > ? AND a.disabled = 0`).get(req.sid, Date.now());
+      if (!account) return false;
+      const admin = { ...account, perms: parsePerms(account.permissions), boardList: parseBoards(account.boards) };
+      if (!can(admin, 'view_alerts')) return false;
+      return !alert || admin.role === 'owner' || !admin.boardList.length || admin.boardList.includes(alert.board);
+    } };
+    mod.clients.add(client);
+    req.on('close', () => mod.clients.delete(client));
   });
 
   app.get('/admin/alerts', need('view_alerts'), (req, res) => {
@@ -169,6 +185,7 @@ export function registerModeration(app, ctx) {
   app.post('/admin/alerts/:id', need('view_alerts'), (req, res) => {
     const a = db.prepare('SELECT * FROM alerts WHERE id = ?').get(Number(req.params.id));
     if (!a) return fail(req, res, 'No such alert.', 404);
+    if (req.admin.role !== 'owner' && req.admin.boardList?.length && !req.admin.boardList.includes(a.board)) return fail(req, res, 'You do not have permission to manage this alert.', 403);
     const action = req.body.action;
     if (action === 'delete_post') {
       if (!can(req.admin, 'delete_posts', a.board)) return fail(req, res, 'You do not have permission to delete posts there.', 403);
@@ -181,8 +198,11 @@ export function registerModeration(app, ctx) {
     back(res, '/admin/alerts', `Alert #${a.id} ${status === 'open' ? 'reopened' : 'resolved'}.`);
   });
   app.post('/admin/alerts-resolve-all', need('view_alerts'), (req, res) => {
-    const r = db.prepare('UPDATE alerts SET status = \'resolved\', handled_by = ?, handled_at = ? WHERE status = \'open\'')
-      .run(req.admin.username, Date.now());
+    const scoped = req.admin.role !== 'owner' && req.admin.boardList?.length;
+    const boards = scoped ? req.admin.boardList : [];
+    const r = db.prepare(`UPDATE alerts SET status = 'resolved', handled_by = ?, handled_at = ? WHERE status = 'open'
+      ${scoped ? `AND board IN (${boards.map(() => '?').join(',')})` : ''}`)
+      .run(req.admin.username, Date.now(), ...boards);
     audit(req, 'resolve_all_alerts', `${r.changes} alerts`);
     back(res, '/admin/alerts', `Resolved ${r.changes} alerts.`);
   });
@@ -221,19 +241,24 @@ export function registerModeration(app, ctx) {
     if (req.query.post) {
       const postId = Number(req.query.post);
       const p = db.prepare('SELECT id, board, body, subject FROM posts WHERE id = ?').get(postId);
-      prefill = { post_id: postId, ip: postIp(postId) || '', excerpt: p ? `${p.subject} ${p.body}`.trim().slice(0, 200) : '' };
+      const historical = p || db.prepare('SELECT board FROM post_logs WHERE post_id = ? ORDER BY id DESC LIMIT 1').get(postId);
+      if (req.admin.role !== 'owner' && req.admin.boardList?.length && (!historical || !can(req.admin, 'manage_bans', historical.board))) return fail(req, res, 'You cannot moderate that board.', 403);
+      prefill = { board: historical?.board, post_id: postId, ip: postIp(postId) || '', excerpt: p ? `${p.subject} ${p.body}`.trim().slice(0, 200) : '' };
     }
     const now = Date.now();
-    const active = db.prepare('SELECT * FROM bans WHERE lifted = 0 AND (expires IS NULL OR expires > ?) ORDER BY id DESC').all(now);
-    const past = db.prepare('SELECT * FROM bans WHERE lifted = 1 OR (expires IS NOT NULL AND expires <= ?) ORDER BY id DESC LIMIT 50').all(now);
-    const fileBans = db.prepare('SELECT * FROM file_bans ORDER BY created DESC').all();
-    const appeals = db.prepare(`SELECT ap.*, b.kind, b.value, b.reason, b.scope, b.expires, b.lifted FROM appeals ap
-                                JOIN bans b ON b.id = ap.ban_id WHERE ap.status = 'open' ORDER BY ap.id`).all();
+    const allowedBan = (b) => req.admin.role === 'owner' || !req.admin.boardList?.length || (b.board && can(req.admin, 'manage_bans', b.board));
+    const active = db.prepare('SELECT * FROM bans WHERE lifted = 0 AND (expires IS NULL OR expires > ?) ORDER BY id DESC').all(now).filter(allowedBan);
+    const past = db.prepare('SELECT * FROM bans WHERE lifted = 1 OR (expires IS NOT NULL AND expires <= ?) ORDER BY id DESC LIMIT 50').all(now).filter(allowedBan);
+    const fileBans = req.admin.role !== 'owner' && req.admin.boardList?.length ? [] : db.prepare('SELECT * FROM file_bans ORDER BY created DESC').all();
+    const appeals = db.prepare(`SELECT ap.*, b.kind, b.value, b.reason, b.scope, b.expires, b.lifted, b.board FROM appeals ap
+                                JOIN bans b ON b.id = ap.ban_id WHERE ap.status = 'open' ORDER BY ap.id`).all().filter(allowedBan);
     const geoSource = getSettings(db).geoip_header ? `header ${getSettings(db).geoip_header}` : (mod.hasGeo ? 'db-ip.com database' : null);
-    render(req, res, 'Bans', M.bansPage(req.admin, { active, past, fileBans, appeals, prefill, geoSource, durations: Object.keys(DURATIONS) }, req.query.msg));
+    render(req, res, 'Bans', M.bansPage(req.admin, { active, past, fileBans, appeals, prefill, geoSource, durations: Object.keys(DURATIONS), boards: db.prepare('SELECT slug FROM boards ORDER BY slug').all().filter((b) => can(req.admin, 'manage_bans', b.slug)) }, req.query.msg));
   });
 
   app.post('/admin/bans', need('manage_bans'), (req, res) => {
+    const board = String(req.body.board || '').trim();
+    if ((board && !db.prepare('SELECT slug FROM boards WHERE slug = ?').get(board)) || (board && !can(req.admin, 'manage_bans', board)) || (!board && req.admin.role !== 'owner' && req.admin.boardList?.length)) return fail(req, res, 'Choose a board you can moderate. Only unrestricted staff can create site-wide bans.', 403);
     const kind = ['ip', 'range', 'country'].includes(req.body.kind) ? req.body.kind : null;
     let value = String(req.body.value || '').trim();
     const scope = req.body.scope === 'access' ? 'access' : 'post';
@@ -257,12 +282,13 @@ export function registerModeration(app, ctx) {
       if (!/^[A-Z]{2}$/.test(value)) return fail(req, res, 'Use a two-letter ISO country code, e.g. DE, US, RU.');
     }
     const now = Date.now();
-    db.prepare(`INSERT INTO bans (kind, value, scope, reason, post_id, created_by, created, expires)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(kind, value, scope, reason, postId, req.admin.username, now, dur === null ? null : now + dur);
+    db.prepare(`INSERT INTO bans (kind, value, scope, reason, post_id, created_by, created, expires, board)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(kind, value, scope, reason, postId, req.admin.username, now, dur === null ? null : now + dur, board);
     mod.invalidate();
-    audit(req, 'ban', `${kind} ${value} (${scope === 'access' ? 'block site access' : 'block posting'}, ${req.body.duration}): ${reason}${postId ? ` [post No.${postId}]` : ''}`);
-    if (postId && req.body.delete_post && can(req.admin, 'delete_posts')) {
+    audit(req, 'ban', `${board ? '/' + board + '/' : 'site-wide'} ${kind} ${value} (${scope === 'access' ? 'block site access' : 'block posting'}, ${req.body.duration}): ${reason}${postId ? ` [post No.${postId}]` : ''}`);
+    const postBoard = postId ? db.prepare('SELECT board FROM posts WHERE id = ?').get(postId)?.board : null;
+    if (postId && postBoard && req.body.delete_post && can(req.admin, 'delete_posts', postBoard)) {
       deletePost(postId);
       audit(req, 'delete_post', `No.${postId} (with ban)`);
     }
@@ -272,6 +298,7 @@ export function registerModeration(app, ctx) {
   app.post('/admin/bans/:id/lift', need('manage_bans'), (req, res) => {
     const b = db.prepare('SELECT * FROM bans WHERE id = ?').get(Number(req.params.id));
     if (!b) return fail(req, res, 'No such ban.', 404);
+    if ((b.board && !can(req.admin, 'manage_bans', b.board)) || (!b.board && req.admin.role !== 'owner' && req.admin.boardList?.length)) return fail(req, res, 'You cannot lift that ban.', 403);
     db.prepare('UPDATE bans SET lifted = 1 WHERE id = ?').run(b.id);
     mod.invalidate();
     audit(req, 'lift_ban', `#${b.id} ${b.kind} ${b.value}`);
@@ -281,6 +308,8 @@ export function registerModeration(app, ctx) {
   app.post('/admin/appeals/:id', need('manage_bans'), (req, res) => {
     const ap = db.prepare('SELECT * FROM appeals WHERE id = ? AND status = \'open\'').get(Number(req.params.id));
     if (!ap) return fail(req, res, 'No such open appeal.', 404);
+    const ban = db.prepare('SELECT board FROM bans WHERE id = ?').get(ap.ban_id);
+    if (!ban || (ban.board && !can(req.admin, 'manage_bans', ban.board)) || (!ban.board && req.admin.role !== 'owner' && req.admin.boardList?.length)) return fail(req, res, 'You cannot handle that appeal.', 403);
     const accept = req.body.action === 'accept';
     const response = String(req.body.response || '').trim().slice(0, 500);
     db.prepare('UPDATE appeals SET status = ?, response = ?, handled_by = ?, handled_at = ? WHERE id = ?')
@@ -315,6 +344,7 @@ export function registerModeration(app, ctx) {
   });
 
   app.post('/admin/file-bans/remove', need('manage_bans'), (req, res) => {
+    if (req.admin.role !== 'owner' && req.admin.boardList?.length) return fail(req, res, 'Only unrestricted staff can remove global file bans.', 403);
     const sha = String(req.body.sha256 || '');
     db.prepare('DELETE FROM file_bans WHERE sha256 = ?').run(sha);
     audit(req, 'unban_file', sha);
@@ -350,22 +380,30 @@ export function registerModeration(app, ctx) {
         return res.redirect(p.thread_id ? threadUrl : `/${p.board}/`);
       case 'delete_file':
       case 'ban_file': {
-        if (!p.file) return fail(req, res, 'That post has no file.');
+        if (!ctx.attachments.files(p.id).length) return fail(req, res, 'That post has no file.');
         if (action === 'ban_file') {
-          if (!p.file_sha256) return fail(req, res, 'This file was uploaded before hashing was added; delete it instead.');
+          const all = [p, ...db.prepare('SELECT * FROM attachments WHERE post_id = ? AND file IS NOT NULL').all(p.id)].filter((f) => f.file);
+          if (all.some((f) => !f.file_sha256)) return fail(req, res, 'A file predates hashing; delete it instead.');
+          // Global hash bans affect all boards, so board-scoped staff may delete files but not create global bans.
+          if (req.admin.role !== 'owner' && req.admin.boardList?.length) return fail(req, res, 'Only unrestricted staff can ban files globally.', 403);
           const reason = String(req.body.reason || '').trim() || `banned from ${where}`;
-          const phash = p.file_phash || await perceptualHash(path.join(uploadDir, p.file), p.file_mime);
-          db.prepare('INSERT OR IGNORE INTO file_bans (sha256, reason, created_by, created, phash) VALUES (?, ?, ?, ?, ?)')
-            .run(p.file_sha256, reason, req.admin.username, Date.now(), phash);
-          // Remove every live copy of the same file, and visually similar images.
           const threshold = Number(getSettings(db).phash_threshold) || 0;
-          const copies = db.prepare('SELECT id, file, file_sha256, file_phash FROM posts WHERE file IS NOT NULL').all()
-            .filter((c) => c.file_sha256 === p.file_sha256 || (phash && c.file_phash && hamming(c.file_phash, phash) <= threshold));
-          for (const c of copies) { db.prepare('UPDATE posts SET file = NULL WHERE id = ?').run(c.id); rmUpload(c.file); }
-          audit(req, 'ban_file', `${p.file_orig} (${p.file_sha256.slice(0, 16)}…) from ${where}, ${copies.length} copies removed`);
+          let removed = 0;
+          for (const source of all) {
+            const phash = source.file_phash || await perceptualHash(path.join(uploadDir, source.file), source.file_mime);
+            db.prepare('INSERT OR IGNORE INTO file_bans (sha256, reason, created_by, created, phash) VALUES (?, ?, ?, ?, ?)')
+              .run(source.file_sha256, reason, req.admin.username, Date.now(), phash);
+            for (const table of ['posts', 'attachments']) {
+              for (const copy of db.prepare(`SELECT id, file, file_sha256, file_phash FROM ${table} WHERE file IS NOT NULL`).all()) {
+                if (copy.file_sha256 !== source.file_sha256 && !(phash && copy.file_phash && hamming(copy.file_phash, phash) <= threshold)) continue;
+                db.prepare(`UPDATE ${table} SET file = NULL WHERE id = ?`).run(copy.id);
+                rmUpload(copy.file); removed++;
+              }
+            }
+          }
+          audit(req, 'ban_file', `${where}, ${all.length} hashes banned, ${removed} copies removed`);
         } else {
-          db.prepare('UPDATE posts SET file = NULL WHERE id = ?').run(p.id);
-          rmUpload(p.file);
+          ctx.attachments.clear(p.id);
           audit(req, 'delete_file', `${p.file_orig} from ${where}`);
         }
         return res.redirect(`${threadUrl}#p${p.id}`);

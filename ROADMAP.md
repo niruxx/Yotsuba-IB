@@ -25,7 +25,7 @@ Items are roughly ordered by priority within each section.
 - [x] Sticky and locked threads
 - [x] Delete only a post's file while keeping its text
 - [x] Login rate limiting (10 failures per 15 min per IP/username), failed logins in the staff activity log
-- [ ] **CAPTCHA** on posting (self-hosted, or hCaptcha/Turnstile)
+- [x] **CAPTCHA** on anonymous posting (self-hosted image challenge; requires sharp)
 - [x] Perceptual-hash file bans (catch resized/re-encoded copies of banned images)
 - [x] Spam heuristics: link limits, duplicate-text detection, per-board flood detection across IPs
 - [x] Separate cooldowns for threads, replies and uploads; per-board cooldown overrides
@@ -34,7 +34,7 @@ Items are roughly ordered by priority within each section.
 - [x] Users can delete their own posts or files (with a deletion password remembered by the browser)
 - [x] Moving threads between boards
 - [x] CSRF tokens on every form submitted with a staff session
-- [ ] Two-factor authentication for staff accounts
+- [x] Two-factor authentication for staff accounts (TOTP plus single-use recovery codes)
 - [ ] Perceptual hashing for video files (currently exact SHA-256 only)
 - [ ] Custom capcode labels per staff account
 
@@ -49,7 +49,7 @@ Items are roughly ordered by priority within each section.
 - [x] Country flags and per-thread poster IDs (optional per board; click an ID to highlight its posts)
 - [x] Image/video dimensions in file info
 - [x] Post preview on quote-link hover, "(You)" markers, backlinks showing who replied
-- [ ] Multiple files per post
+- [x] Multiple files per post (up to four, configurable site maximum)
 - [ ] Audio (mp3/ogg) and PDF uploads
 - [ ] Oekaki / drawing board
 
@@ -77,7 +77,7 @@ Items are roughly ordered by priority within each section.
       bump limit, image limit, threads per page, forced anonymity
 - [x] Per-board staff permissions (board-scoped moderators / "janitors")
 - [x] Image banners per board
-- [ ] Board-scoped bans (bans are currently site-wide)
+- [x] Board-scoped posting/access bans and appeals, alongside site-wide bans
 
 ## Platform & operations
 
@@ -90,3 +90,5 @@ Items are roughly ordered by priority within each section.
 - [x] Birthday hats: date, hat style and colour set in the admin panel
 - [ ] Object-storage uploads (S3-compatible) and a CDN-friendly media domain
 - [ ] Off-site backup targets (S3, rsync)
+
+- [x] Shared bottom board navigation, synchronized theme selector and eight-language core interface

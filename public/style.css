@@ -20,6 +20,15 @@ a { color: var(--link); } a:hover { color: var(--link-hover); }
 input, textarea, select { background: var(--input-bg); color: var(--input-fg); border: 1px solid var(--border); }
 .topbar { background: var(--panel); border-bottom: 1px solid var(--border); padding: 4px 10px; }
 .topbar .right { float: right; }
+.bottombar { background: var(--panel); border-block: 1px solid var(--border); padding: 10px 12px; margin-top: 20px; display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; clear: both; }
+.bottombar .boardnav { flex: 1 1 300px; line-height: 1.8; overflow-wrap: anywhere; }
+.bottom-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.bottom-controls label { display: inline-flex; align-items: center; gap: 5px; }
+.bottom-controls form { display: inline-flex; flex-wrap: wrap; gap: 5px; align-items: center; }
+.bottom-controls select, .bottom-controls button { min-height: 32px; }
+.captcha img { display: block; max-width: 100%; margin: 4px 0; }
+.captcha input[name="captcha_answer"] { width: 110px; }
+@media (max-width: 600px) { .bottom-controls { width: 100%; } .bottombar { padding: 10px; } }
 .sitename { font-weight: bold; }
 .hero { text-align: center; color: var(--title); }
 .hero h1 { font: bold 26px tahoma, sans-serif; letter-spacing: -1px; margin: 12px 0 4px; }

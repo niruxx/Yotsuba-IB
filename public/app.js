@@ -13,6 +13,7 @@
     set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* quota */ } },
   };
   const escHtml = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const t = (key) => window.YOTSUBA_I18N?.[key] || key;
   const isTyping = (el) => el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName));
 
   // ======================================================================
@@ -86,6 +87,22 @@
     (listeners.get(key) || []).forEach((fn) => fn(value));
   }
 
+  document.addEventListener('click', async (event) => {
+    const button = event.target.closest('.refresh-captcha');
+    if (!button) return;
+    const row = button.closest('.captcha');
+    button.disabled = true;
+    try {
+      const response = await fetch('/captcha/new', { cache: 'no-store' });
+      if (!response.ok) throw new Error('Please wait before requesting another challenge.');
+      const { token } = await response.json();
+      row.querySelector('[name="captcha_token"]').value = token;
+      row.querySelector('img').src = `/captcha/${token}.png`;
+      row.querySelector('[name="captcha_answer"]').value = '';
+    } catch (error) { alert(error.message); }
+    finally { button.disabled = false; }
+  });
+
   // ---------- page context ----------
   const parts = location.pathname.split('/');
   const boardSlug = parts[1] || '';
@@ -99,17 +116,17 @@
   // ======================================================================
   const panel = $('#settings-panel');
   function buildPanel() {
-    const tabs = SCHEMA.map(([name], i) => `<button type="button" class="tab${i ? '' : ' active'}" data-tab="${i}">${escHtml(name)}</button>`).join('');
+    const tabs = SCHEMA.map(([name], i) => `<button type="button" class="tab${i ? '' : ' active'}" data-tab="${i}">${escHtml(t(name))}</button>`).join('');
     const pages = SCHEMA.map(([, opts], i) => `<div class="tabpage" data-page="${i}"${i ? ' hidden' : ''}>${opts.map(([key, type, , label, help, extra = {}]) => {
       const h = help ? `<small>${escHtml(help)}</small>` : '';
-      if (type === 'bool') return `<label class="opt"><input type="checkbox" data-pref="${key}"> <b>${escHtml(label)}</b> ${h}</label>`;
-      if (type === 'button') return `<button type="button" class="optbtn" data-action="${key}">${escHtml(label)}</button>`;
+      if (type === 'bool') return `<label class="opt"><input type="checkbox" data-pref="${key}"> <b>${escHtml(t(label))}</b> ${h}</label>`;
+      if (type === 'button') return `<button type="button" class="optbtn" data-action="${key}">${escHtml(t(label))}</button>`;
       if (type === 'select') {
-        return `<label class="opt"><b>${escHtml(label)}</b> <select data-pref="${key}">${extra.options.map(([v, t]) => `<option value="${v}">${escHtml(t)}</option>`).join('')}</select> ${h}</label>`;
+        return `<label class="opt"><b>${escHtml(t(label))}</b> <select data-pref="${key}">${extra.options.map(([v, t]) => `<option value="${v}">${escHtml(t)}</option>`).join('')}</select> ${h}</label>`;
       }
-      if (type === 'textarea') return `<label class="opt block"><b>${escHtml(label)}</b> ${h}<textarea data-pref="${key}" rows="5" spellcheck="false"></textarea></label>`;
+      if (type === 'textarea') return `<label class="opt block"><b>${escHtml(t(label))}</b> ${h}<textarea data-pref="${key}" rows="5" spellcheck="false"></textarea></label>`;
       const attrs = Object.entries(extra).map(([k, v]) => `${k}="${v}"`).join(' ');
-      return `<label class="opt"><b>${escHtml(label)}</b> <input type="${type}" data-pref="${key}" ${attrs}> ${h}</label>`;
+      return `<label class="opt"><b>${escHtml(t(label))}</b> <input type="${type}" data-pref="${key}" ${attrs}> ${h}</label>`;
     }).join('')}</div>`).join('');
     panel.innerHTML = `<div class="sp-head"><b>Settings</b> <small>saved in this browser</small><a href="#" class="sp-close" title="close">×</a></div>
       <div class="tabs">${tabs}</div>${pages}`;
@@ -158,7 +175,13 @@
   // ======================================================================
   // Miscellaneous: theme, custom CSS, dates, announcement
   // ======================================================================
-  const applyTheme = () => { root.dataset.theme = prefs.theme; };
+  const applyTheme = () => {
+    root.dataset.theme = ['yotsuba', 'yotsuba-b', 'tomorrow'].includes(prefs.theme) ? prefs.theme : 'yotsuba-b';
+    if ($('#bottom-theme')) $('#bottom-theme').value = root.dataset.theme;
+    const setting = $('[data-pref="theme"]');
+    if (setting) setting.value = root.dataset.theme;
+  };
+  $('#bottom-theme')?.addEventListener('change', (e) => setPref('theme', e.target.value));
   applyTheme(); onPref('theme', applyTheme);
 
   const customStyle = document.createElement('style');

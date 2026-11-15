@@ -17,7 +17,8 @@
   "scripts": {
     "start": "node bin/cli.js",
     "test": "node --test",
-    "prepublishOnly": "npm test"
+    "prepublishOnly": "npm test",
+    "audit": "npm audit --audit-level=low"
   },
   "engines": {
     "node": ">=22.13"
@@ -32,9 +33,9 @@
   ],
   "license": "MIT",
   "dependencies": {
-    "express": "^5.1.0",
-    "maxmind": "^4.3.0",
-    "multer": "^2.0.0"
+    "express": "^5.3.0",
+    "maxmind": "^4.3.29",
+    "multer": "^2.5.0"
   },
   "optionalDependencies": {
     "sharp": "^0.35.5"

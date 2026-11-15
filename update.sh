@@ -46,7 +46,7 @@ git reset --hard "origin/$BRANCH"
 NEW_REV="$(git rev-parse --short HEAD)"
 
 c_info "Installing npm packages"
-npm install --omit=dev --no-audit --no-fund
+npm ci --omit=dev --no-audit --no-fund
 
 c_info "Refreshing GeoIP country database"
 SVC_USER="$(stat -c %U "$DATA_DIR")"

@@ -3,12 +3,12 @@ FROM node:22-bookworm-slim
 
 # ffmpeg: video thumbnails + metadata stripping. tini: proper signal handling.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ffmpeg tini ca-certificates \
+ && apt-get install -y --no-install-recommends ffmpeg tini ca-certificates fonts-dejavu-core \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY package.json ./
-RUN npm install --omit=dev --no-audit --no-fund && npm cache clean --force
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev --no-audit --no-fund && npm cache clean --force
 COPY bin ./bin
 COPY src ./src
 COPY public ./public

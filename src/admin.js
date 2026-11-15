@@ -1,3 +1,4 @@
+import { newTotpSecret, verifyTotp, recoveryCodes, recoveryHash, consumeSecondFactor } from './security.js';
 import { BOARD_TEMPLATES } from './templates.js';
 import { DEFAULT_HOMEPAGE } from './homepage.js';
 import crypto from 'node:crypto';
@@ -86,6 +87,11 @@ export function registerAdmin(app, ctx) {
         .run(a?.id ?? null, String(username).slice(0, 64) || '(blank)', 'failed_login', '', req.ip, Date.now());
       return render(req, res, 'Login', A.loginPage('Invalid credentials'), 401);
     }
+    if (!consumeSecondFactor(db, a, req.body.otp)) {
+      keys.forEach(noteFailure);
+      audit(req, 'failed_second_factor', String(username).slice(0, 64));
+      return render(req, res, 'Login', A.loginPage('Invalid credentials or verification code.'), 401);
+    }
     keys.forEach((k) => failures.delete(k));
     if (a.disabled) {
       return render(req, res, 'Login', A.loginPage(`This account is disabled: ${a.disabled_reason || 'no reason given'}`), 403);
@@ -119,10 +125,13 @@ export function registerAdmin(app, ctx) {
   });
 
   // ---------- my account ----------
-  app.get('/admin/account', requireLogin, (req, res) => render(req, res, 'My account', A.myAccountPage(req.admin, req.query.msg)));
+  app.get('/admin/account', requireLogin, (req, res) => render(req, res, 'My account', A.myAccountPage({ ...req.admin, ...db.prepare('SELECT * FROM admins WHERE id = ?').get(req.admin.id) }, req.query.msg)));
   app.post('/admin/account', requireLogin, (req, res) => {
     const me = db.prepare('SELECT * FROM admins WHERE id = ?').get(req.admin.id);
+    const factorKey = `2fa:${req.admin.id}:${req.ip}`;
+    if (tooMany(factorKey)) return fail(req, res, 'Too many attempts. Try again in 15 minutes.', 429);
     if (!verifyPassword(String(req.body.current || ''), me.password_hash)) return fail(req, res, 'Current password is wrong.', 403);
+    if (!consumeSecondFactor(db, me, req.body.otp)) { noteFailure(factorKey); return fail(req, res, 'Invalid verification code.', 403); }
     const pw = String(req.body.password || '');
     if (pw.length < 8) return fail(req, res, 'New password must be at least 8 characters.');
     setPassword(db, me.id, pw);
@@ -131,10 +140,46 @@ export function registerAdmin(app, ctx) {
     res.redirect('/admin/login');
   });
 
+  app.post('/admin/account/2fa', requireLogin, (req, res) => {
+    const me = db.prepare('SELECT * FROM admins WHERE id = ?').get(req.admin.id);
+    const key = `2fa:${req.admin.id}:${req.ip}`;
+    if (tooMany(key)) return fail(req, res, 'Too many attempts. Try again in 15 minutes.', 429);
+    if (!verifyPassword(String(req.body.current || ''), me.password_hash)) {
+      noteFailure(key); return fail(req, res, 'Current password is wrong.', 403);
+    }
+    if (req.body.action === 'start') {
+      if (me.totp_secret) return fail(req, res, 'Two-factor authentication is already enabled.');
+      const secret = newTotpSecret();
+      db.prepare('UPDATE admins SET totp_pending = ?, totp_pending_session = ?, totp_pending_expires = ? WHERE id = ?')
+        .run(secret, req.sid, Date.now() + 10 * 60_000, me.id);
+      return render(req, res, 'Two-factor authentication', A.twoFactorPage(req.admin, secret));
+    }
+    if (req.body.action === 'enable') {
+      const step = me.totp_pending && me.totp_pending_session === req.sid && me.totp_pending_expires > Date.now()
+        ? verifyTotp(me.totp_pending, req.body.otp) : null;
+      if (step === null) { noteFailure(key); return fail(req, res, 'Invalid or expired verification code. Start setup again.', 403); }
+      const codes = recoveryCodes();
+      db.prepare("UPDATE admins SET totp_secret = totp_pending, totp_pending = '', totp_pending_session = '', totp_pending_expires = 0, totp_last_step = ?, totp_recovery = ? WHERE id = ?")
+        .run(step, JSON.stringify(codes.map(recoveryHash)), me.id);
+      db.prepare('DELETE FROM sessions WHERE admin_id = ? AND token != ?').run(me.id, req.sid);
+      audit(req, 'enable_2fa');
+      return render(req, res, 'Recovery codes', A.recoveryPage(req.admin, codes));
+    }
+    if (req.body.action === 'disable' && me.totp_secret) {
+      if (!consumeSecondFactor(db, me, req.body.otp)) { noteFailure(key); return fail(req, res, 'Invalid verification code.', 403); }
+      db.prepare("UPDATE admins SET totp_secret = '', totp_recovery = '[]', totp_last_step = -1 WHERE id = ?").run(me.id);
+      db.prepare('DELETE FROM sessions WHERE admin_id = ? AND token != ?').run(me.id, req.sid);
+      audit(req, 'disable_2fa');
+      return back(res, '/admin/account', 'Two-factor authentication disabled.');
+    }
+    return fail(req, res, 'Unknown action.');
+  });
+
   // ---------- boards ----------
   app.get('/admin/boards', requirePerm('manage_boards'), (req, res) => {
     const banners = db.prepare('SELECT id, board FROM banners ORDER BY id').all();
     const boards = db.prepare('SELECT * FROM boards ORDER BY position, slug').all()
+      .filter((b) => can(req.admin, 'manage_boards', b.slug))
       .map((b) => ({ ...b, banners: banners.filter((bn) => bn.board === b.slug) }));
     render(req, res, 'Boards', A.boardsPage(req.admin, boards, req.query.msg));
   });
@@ -155,8 +200,8 @@ export function registerAdmin(app, ctx) {
         db.prepare("DELETE FROM settings WHERE key != 'server_secret'").run();
         setSetting(db, 'homepage', JSON.stringify({ ...DEFAULT_HOMEPAGE, layout: template.layout }));
       }
-      const insert = db.prepare('INSERT OR IGNORE INTO boards (slug, title, bio, category, position, created) VALUES (?, ?, ?, ?, ?, ?)');
-      template.boards.forEach(([slug, title, category], i) => insert.run(slug, title, title + ' discussion', category, i, Date.now()));
+      const insert = db.prepare('INSERT OR IGNORE INTO boards (slug, title, bio, category, position, nsfw, created) VALUES (?, ?, ?, ?, ?, ?, ?)');
+      template.boards.forEach(([slug, title, category, nsfw = 0], i) => insert.run(slug, title, title + ' discussion', category, i, nsfw, Date.now()));
       db.exec('COMMIT');
     } catch (err) { db.exec('ROLLBACK'); throw err; }
     audit(req, 'apply_template', `${req.body.template}: ${replace ? 'replace boards and reset settings' : 'merge missing boards; keep layout and existing boards'}`);
@@ -167,6 +212,7 @@ export function registerAdmin(app, ctx) {
     const title = String(req.body.title || '').trim().slice(0, 60);
     const bio = String(req.body.bio || '').trim().slice(0, 500);
     if (!/^[a-z0-9]{1,16}$/.test(slug) || RESERVED.has(slug)) return fail(req, res, 'Invalid or reserved slug.');
+    if (!can(req.admin, 'manage_boards', slug)) return fail(req, res, 'You do not have permission to manage this board.', 403);
     if (!title) return fail(req, res, 'Title is required.');
     if (getBoard(slug)) return fail(req, res, `/${slug}/ already exists.`);
     const hidden = req.body.visible ? 0 : 1;
@@ -183,6 +229,7 @@ export function registerAdmin(app, ctx) {
   app.post('/admin/boards/:slug', requirePerm('manage_boards'), (req, res) => {
     const board = getBoard(req.params.slug);
     if (!board) return fail(req, res, 'No such board.', 404);
+    if (!can(req.admin, 'manage_boards', board.slug)) return fail(req, res, 'You do not have permission to manage this board.', 403);
     if (req.body.action === 'delete') {
       // Delete thread by thread so each thread's upload folder is removed too.
       const threads = db.prepare('SELECT id FROM posts WHERE board = ? AND thread_id IS NULL').all(board.slug);
@@ -230,7 +277,7 @@ export function registerAdmin(app, ctx) {
     if (filters.kind === 'upload') where.push('l.file_orig IS NOT NULL');
     else if (filters.kind) { where.push('l.kind = ?'); args.push(filters.kind); }
     const n = pageNo(req);
-    const rows = db.prepare(`SELECT l.*, (p.id IS NOT NULL) AS live, (p.file IS NOT NULL AND p.file = l.file) AS file_live
+    const rows = db.prepare(`SELECT l.*, (SELECT a.id FROM attachments a WHERE a.post_id = p.id AND a.file = l.file LIMIT 1) AS attachment_id, (p.id IS NOT NULL) AS live, (p.file = l.file OR EXISTS (SELECT 1 FROM attachments a WHERE a.post_id = p.id AND a.file = l.file)) AS file_live
       FROM post_logs l LEFT JOIN posts p ON p.id = l.post_id
       ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
       ORDER BY l.id DESC LIMIT ? OFFSET ?`).all(...args, PAGE + 1, n * PAGE);
@@ -242,10 +289,13 @@ export function registerAdmin(app, ctx) {
   // ---------- settings ----------
   app.get('/admin/settings', requirePerm('manage_settings'), (req, res) =>
     render(req, res, 'Settings', A.settingsPage(req.admin, getSettings(db), req.query.msg)));
-  app.post('/admin/settings', requirePerm('manage_settings'), (req, res) => {
+  app.post('/admin/settings', requirePerm('manage_settings'), async (req, res) => {
     const before = getSettings(db);
     if (!req.body.logging_enabled && req.body.confirm_disable_logging !== '1') return fail(req, res, 'Disabling logging means no log.out files and no uploader IP/name oversight for new posts. Acknowledge the warning first.');
-    const next = { logging_enabled: req.body.logging_enabled ? '1' : '0' };
+    if (req.body.captcha_enabled) {
+      try { await import('sharp'); } catch { return fail(req, res, 'Install sharp before enabling image CAPTCHA.'); }
+    }
+    const next = { captcha_enabled: req.body.captcha_enabled ? '1' : '0', max_files_per_post: String(Math.min(4, Math.max(1, Math.trunc(Number(req.body.max_files_per_post) || Number(before.max_files_per_post))))), logging_enabled: req.body.logging_enabled ? '1' : '0' };
     for (const key of ['thread_inactivity_days', 'file_retention_days', 'log_retention_days', 'cooldown_thread_sec',
       'cooldown_reply_sec', 'cooldown_upload_sec', 'max_links', 'duplicate_window_min', 'board_flood_per_min', 'phash_threshold',
       'archive_days', 'backup_interval_hours', 'backup_keep']) {

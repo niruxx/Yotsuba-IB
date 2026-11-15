@@ -15,6 +15,8 @@ export const PERMISSIONS = {
 };
 
 export const SETTING_DEFAULTS = {
+  captcha_enabled: '0',
+  max_files_per_post: '4',
   log_directory: '',         // blank = private per-board directories
   logging_enabled: '1',        // record raw IP + content of every post
   thread_inactivity_days: '30', // purge threads not bumped for this long (0 = never)
@@ -234,6 +236,21 @@ export function openDb(dataDir) {
     );
   `);
   addCol('file_bans', 'phash', 'TEXT');
+  addCol('admins', 'totp_secret', "TEXT NOT NULL DEFAULT ''");
+  addCol('admins', 'totp_pending', "TEXT NOT NULL DEFAULT ''");
+  addCol('admins', 'totp_pending_session', "TEXT NOT NULL DEFAULT ''");
+  addCol('admins', 'totp_pending_expires', 'INTEGER NOT NULL DEFAULT 0');
+  addCol('admins', 'totp_last_step', 'INTEGER NOT NULL DEFAULT -1');
+  addCol('admins', 'totp_recovery', "TEXT NOT NULL DEFAULT '[]'");
+  addCol('bans', 'board', "TEXT NOT NULL DEFAULT ''");
+  db.exec(`CREATE TABLE IF NOT EXISTS attachments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    post_id INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+    file TEXT, file_mime TEXT NOT NULL, file_orig TEXT NOT NULL, file_size INTEGER NOT NULL,
+    file_sha256 TEXT, file_phash TEXT, width INTEGER, height INTEGER, thumb INTEGER NOT NULL DEFAULT 0,
+    created INTEGER NOT NULL
+  ); CREATE INDEX IF NOT EXISTS idx_attachments_post ON attachments(post_id);`);
+
   return db;
 }
 

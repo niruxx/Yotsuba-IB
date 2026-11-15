@@ -12,7 +12,7 @@
 
 <p align="center">
   <b>A self-hosted anonymous imageboard you can run with one command.</b><br>
-  Boards, threads, image and video uploads, a full moderation suite and staff roles. Everything is stored in one SQLite file and an uploads folder.
+  Boards, threads, image and video uploads, a full moderation suite and staff roles. Data is stored in SQLite and private per-board directories.
 </p>
 
 <p align="center">
@@ -275,7 +275,7 @@ These directories are never served directly. Media is served by post ID through 
 
 In **Admin > Settings**, post logging controls both database logs and `.log.out` files. Disabling it requires acknowledging that new posts will have no uploader oversight. Existing evidence is retained until log retention expires. Choose a private **log directory** (absolute or relative to the data directory) to store new logs elsewhere, and select **Move existing logs** to relocate current sidecars with their board/thread structure. External logs need separate backups; full backups include `boards`, while automatic snapshots include only SQLite. Logs left in previous locations without moving them must be managed separately.
 
-In **Admin > Boards**, the owner can apply **4chan-style** or **8kun-style** curated starter templates. Merge adds missing boards while preserving the current homepage, board settings and posts. Replacement requires typing `REPLACE`, removes all existing boards and posts, resets site settings and applies the corresponding homepage design. Accounts, bans, server secret and moderation evidence remain. Templates are local starter sets, not live imports or exhaustive copies of those sites.
+In **Admin > Boards**, the owner can apply **4chan-style** or **8kun-style** curated starter templates. Merge adds missing boards while preserving the current homepage, board settings and posts. Replacement requires typing `REPLACE`, removes all existing boards and posts, resets site settings and applies the corresponding homepage design. Accounts, bans, server secret and moderation evidence remain. Each style also has an optional **adult boards (18+)** preset. All boards it creates are marked NSFW and show the entry warning. Merge the starter and adult presets to include both sets, or replace with an adult preset to create an adult-only site. Existing boards keep their settings during a merge. Templates are local starter sets, not live imports or exhaustive copies of those sites.
 
 ---
 
@@ -304,7 +304,7 @@ In **Admin > Boards**, the owner can apply **4chan-style** or **8kun-style** cur
 
 ## 🗺️ Roadmap
 
-See [**ROADMAP.md**](ROADMAP.md) for what's done and what's next. The main open items are captcha, two-factor login for staff, S3 storage and multiple files per post.
+See [**ROADMAP.md**](ROADMAP.md) for what's done and what's next. The main open items include S3 storage, audio/PDF uploads, drawing tools and independent board ownership.
 
 ## 🤝 Contributing
 
@@ -315,3 +315,14 @@ Issues and pull requests are welcome. Please run `npm test` before opening a PR.
 MIT
 
 Boards can be marked **SFW** or **NSFW** under **Admin → Boards**, when creating or editing a board. NSFW board pages display a confirmation warning before showing content, including direct thread and catalog links. Confirmation is remembered separately for each board for the browser session. Customize the warning title and message under **Admin → Settings → NSFW board warning**.
+
+Dependency audits, patching and deployment guidance: [Security maintenance](SECURITY.md).
+
+
+### Posting security, attachments and language controls
+
+- **CAPTCHA:** Enable image CAPTCHA in **Admin > Settings**. It applies to anonymous posting; logged-in staff are exempt. The self-hosted challenge requires `sharp`, expires after five minutes, is bound to the requesting client and can be used once. Refresh it in the posting form. This basic challenge complements the existing cooldowns and spam filters; it is not a guarantee against sophisticated bots. CAPTCHA challenges reset when the server restarts.
+- **Staff two-factor authentication:** In **Admin > My account**, enter your password to start setup, add the displayed key to an authenticator app, then confirm its six-digit code within ten minutes. Save the eight single-use recovery codes shown after enrollment. Login then requires a fresh authenticator code or recovery code. Enrollment codes cannot immediately be reused to log in. Disabling 2FA requires the current password and a valid second factor. Enabling or disabling it revokes other signed-in sessions.
+- **Board-specific bans:** In **Admin > Bans**, select one board or the entire site. Posting-only bans leave reading available; access bans cover the selected board, its API and media. Board-scoped staff can only manage bans for assigned boards, while unrestricted staff can also manage site-wide bans. Appeals retain the applicable board scope. File-hash bans remain site-wide and require unrestricted staff.
+- **Multiple attachments:** Select up to four files in a posting form. The site maximum (one to four) is configurable in Settings. Each file receives independent content-type, size and file-ban checks; the entire submission is rejected when any file fails validation. The board's image limit counts all attachments, including those on the opening post. Deleting files removes all attachments on that post. Thread moves, retention, backups and private uploader logs include additional attachments. The JSON API retains legacy primary-file fields and adds an `attachments` array for additional files.
+- **Bottom bar and languages:** All rendered pages share board navigation, a theme selector and a language selector. Themes persist in browser preferences and stay synchronized with the settings panel. Language selection is stored in a cookie and works without JavaScript. Core navigation, posting and account controls support English, Spanish, French, German, Portuguese, Japanese, Russian and Simplified Chinese. Untranslated administrative help and advanced settings use English; board names, rules and posts stay as authored.

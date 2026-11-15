@@ -1,3 +1,7 @@
+import { createAttachments } from './attachments.js';
+import { CaptchaStore } from './security.js';
+import { t } from './i18n.js';
+import { languageMiddleware, LANGUAGES } from './i18n.js';
 import { createBoardStorage } from './storage.js';
 import express from 'express';
 import multer from 'multer';
@@ -19,7 +23,7 @@ import {
 import * as V from './views.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const RESERVED = new Set(['admin', 'static', 'uploads', 'media', 'api', 'search', 'faq', 'appeal', 'rss']);
+const RESERVED = new Set(['admin', 'static', 'uploads', 'media', 'api', 'search', 'faq', 'appeal', 'rss', 'language', 'captcha', 'banner', 'branding', 'healthz', 'metrics']);
 const DAY = 24 * 3600 * 1000;
 
 // Identify file type by magic bytes rather than trusting the client.
@@ -45,6 +49,8 @@ export function createServer(opts) {
   const lastReport = new Map();
   const uploadDir = path.join(dataDir, 'uploads');
   const salt = crypto.randomBytes(16).toString('hex'); // per-process salt for the cooldown hash
+  const captchas = new CaptchaStore();
+  const captchaIp = (req) => crypto.createHmac('sha256', serverSecret(db)).update(req.ip).digest('hex');
   const rates = new RateMemory();       // cooldowns + flood counters
   const recentText = new Map();         // normalized-text hash -> last time posted (duplicate detection)
   const floodAlerted = new Map();       // board -> time a flood alert was last raised
@@ -65,6 +71,7 @@ export function createServer(opts) {
   });
   app.use('/static', express.static(path.join(__dirname, '..', 'public')));
   app.use(express.urlencoded({ extended: false, limit: '64kb' }));
+  app.use(languageMiddleware);
 
   // --- session handling: disabled accounts are rejected even with a live cookie ---
   app.use((req, res, next) => {
@@ -88,27 +95,56 @@ export function createServer(opts) {
 
   // CSRF: every form POST made with a staff session must carry the session's token.
   // (Multipart post forms are checked in the post handler, after the body is parsed.)
-  const csrfOk = (req) => !req.admin || (typeof req.body?._csrf === 'string'
-    && req.body._csrf.length === req.csrf.length
-    && crypto.timingSafeEqual(Buffer.from(req.body._csrf), Buffer.from(req.csrf)));
+  const csrfOk = (req) => {
+    if (!req.admin) return true;
+    if (typeof req.body?._csrf !== 'string' || typeof req.csrf !== 'string') return false;
+    const supplied = Buffer.from(req.body._csrf);
+    const expected = Buffer.from(req.csrf);
+    return supplied.length === expected.length && crypto.timingSafeEqual(supplied, expected);
+  };
   app.use((req, res, next) => {
     if (req.method !== 'POST' || !req.admin || req.is('multipart/form-data')) return next();
     if (!csrfOk(req)) return res.status(403).type('text').send('Invalid or missing CSRF token. Reload the page and try again.');
     next();
   });
 
+  app.post('/language', (req, res) => {
+    const language = String(req.body.language || '');
+    if (!Object.hasOwn(LANGUAGES, language)) return res.status(400).send('Unsupported language.');
+    res.cookie('language', language, { httpOnly: true, sameSite: 'lax', secure: req.secure, maxAge: 365 * DAY });
+    const to = String(req.body.destination || '/');
+    res.redirect(303, /^\/(?![\/\\])/.test(to) && !/[\\\r\n]/.test(to) ? to : '/');
+  });
+
   // Hidden boards are only listed for, and reachable by, logged-in staff.
   const listBoards = (req) => db.prepare(
     `SELECT slug, title, bio, hidden, category, nsfw FROM boards ${req.admin ? '' : 'WHERE hidden = 0'} ORDER BY position, slug`).all();
   const render = (req, res, title, body, status = 200) => {
+    const scoped = req.admin?.role !== 'owner' && req.admin?.boardList?.length;
+    const alertBoards = scoped ? req.admin.boardList : [];
     const alertCount = can(req.admin, 'view_alerts')
-      ? db.prepare('SELECT COUNT(*) AS n FROM alerts WHERE status = \'open\'').get().n : null;
+      ? db.prepare(`SELECT COUNT(*) AS n FROM alerts WHERE status = 'open'
+          ${scoped ? `AND board IN (${alertBoards.map(() => '?').join(',')})` : ''}`).get(...alertBoards).n : null;
     const st = getSettings(db);
     const today = new Date();
     const mmdd = `${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
     const birthday = st.birthday_date && st.birthday_date === mmdd ? { hat: st.birthday_hat, color: st.birthday_color } : null;
+    if (req.admin || req.path.startsWith('/admin')) {
+      res.set('Cache-Control', 'private, no-store');
+      res.vary('Cookie');
+    }
+    if (st.captcha_enabled === '1' && !req.admin && body.includes('<!--captcha-->')) {
+      const token = captchas.issue(captchaIp(req));
+      res.set('Cache-Control', 'private, no-store');
+      const widget = token ? `<tr class="captcha"><th>${t('Verification code')}</th><td>
+        <input type="hidden" name="captcha_token" value="${token}"><img src="/captcha/${token}.png" width="210" height="64" alt="CAPTCHA">
+        <input name="captcha_answer" required maxlength="6" autocomplete="off" aria-label="${t('Verification code')}">
+        <button type="button" class="refresh-captcha">${t('Refresh challenge')}</button></td></tr>` : '<tr><td colspan="2">Too many challenges. Please wait a minute and reload.</td></tr>';
+      body = body.replace('<!--captcha-->', widget);
+    }
+    body = body.replace('<!--captcha-->', '');
     const html = V.layout({ title, siteName, admin: req.admin, boards: listBoards(req), alertCount, body,
-      announcement: st.announcement, hasFaq: !!st.faq_text.trim(), birthday, labels: getHomepage(db).labels });
+      announcement: st.announcement, hasFaq: !!st.faq_text.trim(), birthday, language: req.language, destination: req.originalUrl, labels: getHomepage(db).labels });
     res.status(status).type('html').send(withCsrf(req, html));
   };
   // Adds the staff CSRF token to every POST form in a chunk of HTML.
@@ -128,7 +164,8 @@ export function createServer(opts) {
   // Bans that block site access (e.g. country bans for legal reasons). Staff and the login page are exempt.
   app.use((req, res, next) => {
     if (req.admin || req.path.startsWith('/static/') || req.path.startsWith('/admin/login') || req.path === '/appeal') return next();
-    const ban = mod.findBan(req, 'access');
+    const slug = req.path.startsWith('/api/') ? req.path.split('/')[2] : req.path.split('/')[1];
+    const ban = mod.findBan(req, 'access', slug);
     if (ban) return banned(req, res, ban);
     next();
   });
@@ -145,11 +182,13 @@ export function createServer(opts) {
     fs.rm(thumbPath(path.join(uploadDir, file)), { force: true }, () => {});
   };
 
+  const attachments = createAttachments(db, rmUpload);
   // Private per-board storage; SQLite remains authoritative for rendering.
   function deletePost(id) {
     const p = db.prepare('SELECT id, board, thread_id FROM posts WHERE id = ?').get(id);
     if (!p) return;
-    const files = db.prepare('SELECT file FROM posts WHERE (id = ? OR thread_id = ?) AND file IS NOT NULL').all(id, id);
+    const related = db.prepare('SELECT id FROM posts WHERE id = ? OR thread_id = ?').all(id, id);
+    const files = related.flatMap((p) => attachments.files(p.id));
     db.prepare('DELETE FROM posts WHERE id = ?').run(id);
     for (const { file } of files) rmUpload(file);
     const snapshots = p.thread_id ? [id] : fs.readdirSync(storage.threadDir(p.board, p.id)).filter((f) => /^\d+\.json$/.test(f)).map((f) => parseInt(f, 10));
@@ -191,6 +230,9 @@ export function createServer(opts) {
       const old = db.prepare('SELECT id, file FROM posts WHERE file IS NOT NULL AND created < ?').all(now - fileDays * DAY);
       const clear = db.prepare('UPDATE posts SET file = NULL WHERE id = ?');
       for (const { id, file } of old) { clear.run(id); rmUpload(file); }
+      for (const extra of db.prepare('SELECT id, file FROM attachments WHERE file IS NOT NULL AND created < ?').all(now - fileDays * DAY)) {
+        rmUpload(extra.file); db.prepare('UPDATE attachments SET file = NULL WHERE id = ?').run(extra.id);
+      }
     }
     if (logDays > 0) {
       db.prepare('DELETE FROM post_logs WHERE created < ?').run(now - logDays * DAY);
@@ -203,27 +245,59 @@ export function createServer(opts) {
       destination: uploadDir,
       filename: (req, file, cb) => cb(null, `tmp-${crypto.randomBytes(12).toString('hex')}`),
     }),
-    limits: { fileSize: maxFileMb * 1024 * 1024, files: 1, fields: 20 },
+    limits: { fileSize: maxFileMb * 1024 * 1024, files: 4, fields: 20 },
   });
 
   // --- media: looked up by post ID so file paths (which contain IPs) are never exposed ---
   app.get('/media/thumb/:name', (req, res, next) => {
-    const p = db.prepare(`SELECT p.file, p.thumb, b.hidden FROM posts p JOIN boards b ON b.slug = p.board
+    const p = db.prepare(`SELECT p.file, p.thumb, p.board, b.hidden FROM posts p JOIN boards b ON b.slug = p.board
                           WHERE p.id = ? AND p.file IS NOT NULL`).get(parseInt(req.params.name, 10));
     if (!p || !p.thumb || (p.hidden && !req.admin)) return next();
+    const ban = !req.admin && mod.findBan(req, 'access', p.board);
+    if (ban) return banned(req, res, ban);
     res.sendFile(thumbPath(path.resolve(uploadDir, p.file)), {
       headers: { 'Content-Type': 'image/jpeg', 'Cache-Control': p.hidden ? 'private, no-store' : 'public, max-age=2592000' },
     }, (err) => err && !res.headersSent && next());
   });
   app.get('/media/:name', (req, res, next) => {
     const id = parseInt(req.params.name, 10);
-    const p = db.prepare(`SELECT p.file, p.file_mime, b.hidden FROM posts p JOIN boards b ON b.slug = p.board
+    const p = db.prepare(`SELECT p.file, p.file_mime, p.board, b.hidden FROM posts p JOIN boards b ON b.slug = p.board
                           WHERE p.id = ? AND p.file IS NOT NULL`).get(id);
     if (!p || (p.hidden && !req.admin)) return next();
+    const ban = !req.admin && mod.findBan(req, 'access', p.board);
+    if (ban) return banned(req, res, ban);
     res.sendFile(path.resolve(uploadDir, p.file), {
       headers: { 'Content-Type': p.file_mime, 'Cache-Control': p.hidden ? 'private, no-store' : 'public, max-age=2592000' },
     }, (err) => err && !res.headersSent && next());
   });
+
+  app.get('/captcha/new', (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    if (getSettings(db).captcha_enabled !== '1') return res.status(404).json({ error: 'CAPTCHA disabled' });
+    const token = captchas.issue(captchaIp(req));
+    return token ? res.json({ token }) : res.status(429).json({ error: 'Too many challenges' });
+  });
+  app.get('/captcha/:token.png', async (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    try {
+      const image = await captchas.image(req.params.token, captchaIp(req));
+      if (!image) return res.sendStatus(404);
+      res.type('png').send(image);
+    } catch { res.status(503).send('Image CAPTCHA is unavailable. Contact the administrator.'); }
+  });
+
+  const extraMedia = (thumbnail) => (req, res, next) => {
+    const file = db.prepare(`SELECT a.*, p.board, b.hidden FROM attachments a JOIN posts p ON p.id = a.post_id
+      JOIN boards b ON b.slug = p.board WHERE a.id = ? AND a.file IS NOT NULL`).get(Number(req.params.id));
+    if (!file || (file.hidden && !req.admin) || (thumbnail && !file.thumb)) return next();
+    const ban = !req.admin && mod.findBan(req, 'access', file.board);
+    if (ban) return banned(req, res, ban);
+    res.sendFile(path.resolve(uploadDir, file.file) + (thumbnail ? '.thumb.jpg' : ''), {
+      headers: { 'Content-Type': thumbnail ? 'image/jpeg' : file.file_mime, 'Cache-Control': file.hidden ? 'private, no-store' : 'public, max-age=2592000' },
+    }, (err) => err && !res.headersSent && next());
+  };
+  app.get('/media/attachments/thumb/:id', extraMedia(true));
+  app.get('/media/attachments/:id', extraMedia(false));
 
   // --- public routes ---
   app.get('/', (req, res) => {
@@ -255,8 +329,8 @@ export function createServer(opts) {
   });
 
   const { audit } = registerAdmin(app, { db, render, fail, deletePost, uploadDir, getBoard, RESERVED, runPurge, storage });
-  registerModeration(app, { db, render, fail, deletePost, mod, audit, rmUpload, uploadDir, storage });
-  registerApi(app, { db, getVisibleBoard, listBoards, thumbPath });
+  registerModeration(app, { db, render, fail, deletePost, mod, audit, rmUpload, uploadDir, storage, attachments });
+  registerApi(app, { db, getVisibleBoard, listBoards, thumbPath, attachments });
   registerHomepage(app, { db, dataDir, render, fail, audit, csrfOk, views: HV });
 
   // --- health & metrics ---
@@ -300,7 +374,7 @@ export function createServer(opts) {
   app.get('/banner/:id', (req, res, next) => {
     const b = db.prepare('SELECT bn.*, bo.hidden FROM banners bn JOIN boards bo ON bo.slug = bn.board WHERE bn.id = ?').get(Number(req.params.id));
     if (!b || (b.hidden && !req.admin)) return next();
-    res.sendFile(b.file, { root: bannerDir, headers: { 'Content-Type': b.mime, 'Cache-Control': 'public, max-age=86400' } },
+    res.sendFile(b.file, { root: bannerDir, headers: { 'Content-Type': b.mime, 'Cache-Control': b.hidden ? 'private, no-store' : 'public, max-age=86400' } },
       (err) => err && !res.headersSent && next());
   });
   app.post('/admin/boards/:slug/banners', bannerUpload.single('banner'), (req, res) => {
@@ -365,7 +439,7 @@ export function createServer(opts) {
     const lastReplies = db.prepare('SELECT * FROM (SELECT * FROM posts WHERE thread_id = ? ORDER BY id DESC LIMIT 5) ORDER BY id');
     const threads = ops.map((op) => {
       const replies = lastReplies.all(op.id);
-      return { op, replies, omitted: op.reply_count - replies.length };
+      return { op: attachments.decorate(op), replies: replies.map(attachments.decorate), omitted: op.reply_count - replies.length };
     });
     render(req, res, `/${board.slug}/ - ${board.title}`,
       V.boardPage(board, threads, { admin: staffCaps(req, board.slug), loggedIn: !!req.admin, page, pages, maxMb: boardMaxMb(board), banner: randomBanner(board.slug) }));
@@ -377,7 +451,7 @@ export function createServer(opts) {
     if (!op) return fail(req, res, 'Thread not found (it may have been pruned or deleted).', 404);
     const replies = db.prepare('SELECT * FROM posts WHERE thread_id = ? ORDER BY id').all(op.id);
     render(req, res, `/${board.slug}/ - ${op.subject || op.body.slice(0, 40) || `No.${op.id}`}`,
-      V.threadPage(board, op, replies, { admin: staffCaps(req, board.slug), loggedIn: !!req.admin, maxMb: boardMaxMb(board), banner: randomBanner(board.slug) }));
+      V.threadPage(board, attachments.decorate(op), replies.map(attachments.decorate), { admin: staffCaps(req, board.slug), loggedIn: !!req.admin, maxMb: boardMaxMb(board), banner: randomBanner(board.slug) }));
   });
 
   // Thread auto-update: returns rendered HTML for replies newer than ?after=<postId>.
@@ -391,7 +465,7 @@ export function createServer(opts) {
     const fresh = db.prepare('SELECT * FROM posts WHERE thread_id = ? AND id > ? ORDER BY id').all(op.id, after);
     const caps = staffCaps(req, board.slug);
     res.set('Cache-Control', 'no-store').json({
-      posts: fresh.map((p) => ({ id: p.id, html: withCsrf(req, V.renderPost(p, board, { isOp: false, admin: caps })) })),
+      posts: fresh.map((p) => ({ id: p.id, html: withCsrf(req, V.renderPost(attachments.decorate(p), board, { isOp: false, admin: caps })) })),
       replies: op.reply_count, locked: !!op.locked, archived: !!op.archived,
     });
   });
@@ -402,7 +476,7 @@ export function createServer(opts) {
     if (!board) return next();
     const sort = ['bump', 'new', 'replies'].includes(req.query.sort) ? req.query.sort : 'bump';
     const order = { bump: 'p.bumped DESC', new: 'p.id DESC', replies: 'p.reply_count DESC' }[sort];
-    const threads = db.prepare(`SELECT p.*, (SELECT COUNT(*) FROM posts r WHERE r.thread_id = p.id AND r.file IS NOT NULL) AS images
+    const threads = db.prepare(`SELECT p.*, ((SELECT COUNT(*) FROM posts r WHERE r.thread_id = p.id AND r.file IS NOT NULL) + (SELECT COUNT(*) FROM attachments a JOIN posts r ON r.id = a.post_id WHERE (r.thread_id = p.id OR r.id = p.id) AND a.file IS NOT NULL)) AS images
                                 FROM posts p WHERE p.board = ? AND p.thread_id IS NULL AND p.archived = 0
                                 ORDER BY p.sticky DESC, ${order}`).all(board.slug);
     render(req, res, `/${board.slug}/ - Catalog`, V.catalogPage(board, threads, sort));
@@ -431,8 +505,10 @@ export function createServer(opts) {
     res.redirect(`/${req.params.slug}/thread/${p.thread_id ?? p.id}#p${p.id}`);
   });
 
-  app.post('/:slug/post', upload.single('file'), async (req, res) => {
-    const cleanup = () => req.file && fs.rm(req.file.path, { force: true }, () => {});
+  app.post('/:slug/post', upload.array('file', 4), async (req, res) => {
+    req.files ||= [];
+    req.file = req.files[0];
+    const cleanup = () => { for (const file of req.files || []) fs.rm(file.path, { force: true }, () => {}); };
     const bail = (msg, status) => { cleanup(); fail(req, res, msg, status); };
     if (req.admin && !csrfOk(req)) return bail('Invalid or missing CSRF token. Reload the page and try again.', 403);
 
@@ -440,11 +516,13 @@ export function createServer(opts) {
     if (!board) return bail('No such board.', 404);
 
     if (!req.admin) {
-      const ban = mod.findBan(req, 'post');
+      const ban = mod.findBan(req, 'post', board.slug);
       if (ban) { cleanup(); return banned(req, res, ban); }
     }
 
     const settings = getSettings(db);
+    if (settings.captcha_enabled === '1' && !req.admin && !captchas.verify(req.body.captcha_token, req.body.captcha_answer, captchaIp(req))) return bail('Invalid or expired CAPTCHA. Reload the board or thread to get a new challenge.', 403);
+    if (req.files.length > Number(settings.max_files_per_post)) return bail(`Maximum ${settings.max_files_per_post} files per post.`);
     const num = (k) => Number(settings[k]) || 0;
     const ipHash = crypto.createHash('sha256').update(salt + req.ip).digest('hex').slice(0, 16);
     const now = Date.now();
@@ -495,10 +573,11 @@ export function createServer(opts) {
     }
     // --- per-board posting rules ---
     if (board.text_only && req.file) return bail('This is a text-only board; files are not allowed.');
+    if (!thread && board.image_limit && req.files.length > board.image_limit) return bail(`This thread allows at most ${board.image_limit} files.`);
     if (!thread && board.require_subject && !subject) return bail('A subject is required for new threads on this board.');
-    if (req.file && req.file.size > boardMaxMb(board) * 1024 * 1024) return bail(`File too large (max ${boardMaxMb(board)} MB on this board).`);
+    if (req.files.some((file) => file.size > boardMaxMb(board) * 1024 * 1024)) return bail(`File too large (max ${boardMaxMb(board)} MB on this board).`);
     if (thread && req.file && board.image_limit
-        && db.prepare('SELECT COUNT(*) AS n FROM posts WHERE (id = ? OR thread_id = ?) AND file_orig IS NOT NULL').get(thread.id, thread.id).n >= board.image_limit) {
+        && (db.prepare('SELECT COUNT(*) AS n FROM posts WHERE (id = ? OR thread_id = ?) AND file_orig IS NOT NULL').get(thread.id, thread.id).n + db.prepare('SELECT COUNT(*) AS n FROM attachments a JOIN posts p ON p.id = a.post_id WHERE p.id = ? OR p.thread_id = ?').get(thread.id, thread.id).n + req.files.length) > board.image_limit) {
       return bail(`This thread has reached its image limit (${board.image_limit}). Post without a file.`);
     }
     if (!thread && !req.file && !board.text_only) return bail('A file is required to start a thread.');
@@ -543,8 +622,10 @@ export function createServer(opts) {
 
     // --- file checks: type sniffing, exact-hash bans, perceptual-hash bans ---
     let mime = null, ext = null, fileSha = null, phash = null;
-    if (req.file) {
-      const fd = fs.openSync(req.file.path, 'r');
+    const checked = [];
+    for (const uploadFile of req.files) {
+      phash = null;
+      const fd = fs.openSync(uploadFile.path, 'r');
       const head = Buffer.alloc(16);
       fs.readSync(fd, head, 0, 16, 0);
       fs.closeSync(fd);
@@ -553,17 +634,19 @@ export function createServer(opts) {
       const allowed = board.allowed_types.split(',').map((t) => t.trim()).filter(Boolean);
       if (allowed.length && !allowed.includes(sniffed[1])) return bail(`This board only accepts: ${allowed.join(', ')}.`);
       [mime, ext] = sniffed;
-      fileSha = crypto.createHash('sha256').update(fs.readFileSync(req.file.path)).digest('hex');
+      fileSha = crypto.createHash('sha256').update(fs.readFileSync(uploadFile.path)).digest('hex');
       const fileBan = db.prepare('SELECT reason FROM file_bans WHERE sha256 = ?').get(fileSha);
       if (fileBan) return reject(`banned file (exact match): ${fileBan.reason}`, `This file is banned: ${fileBan.reason}`);
-      phash = await perceptualHash(req.file.path, mime);
+      phash = await perceptualHash(uploadFile.path, mime);
       if (phash) {
         const threshold = num('phash_threshold');
         const near = db.prepare('SELECT reason, phash FROM file_bans WHERE phash IS NOT NULL').all()
           .find((f) => hamming(f.phash, phash) <= threshold);
         if (near) return reject(`banned file (similar image): ${near.reason}`, `This image is banned: ${near.reason}`);
       }
+      checked.push({ uploadFile, mime, ext, fileSha, phash });
     }
+    if (checked.length) ({ mime, ext, fileSha, phash } = checked[0]);
     const fileOrig = req.file ? req.file.originalname.slice(0, 100) : null;
     const fileSize = req.file?.size ?? null;
 
@@ -585,19 +668,27 @@ export function createServer(opts) {
     if (normalizeText(body).length >= 15) recentText.set(textHash(body), now);
 
     let file = null;
-    if (req.file) {
-      const tid = thread?.id ?? id;
-      const dir = storage.threadDir(board.slug, tid);
+    try {
+      const dir = storage.threadDir(board.slug, thread?.id ?? id);
       fs.mkdirSync(dir, { recursive: true });
-      const fname = `${id}.${ext}`;
-      file = path.relative(uploadDir, path.join(dir, fname)).split(path.sep).join('/');
-      // Strips EXIF/GPS and video metadata, records dimensions, writes a thumbnail.
-      const media = await storeMedia(req.file.path, path.join(uploadDir, file), mime);
-      db.prepare('UPDATE posts SET file = ?, file_sha256 = ?, width = ?, height = ?, thumb = ? WHERE id = ?')
-        .run(file, fileSha, media.width, media.height, media.thumb ? 1 : 0, id);
+      for (const [index, item] of checked.entries()) {
+        const filename = `${id}${index ? '-' + (index + 1) : ''}.${item.ext}`;
+        const relative = path.relative(uploadDir, path.join(dir, filename)).split(path.sep).join('/');
+        const media = await storeMedia(item.uploadFile.path, path.join(uploadDir, relative), item.mime);
+        if (!index) {
+          file = relative;
+          db.prepare('UPDATE posts SET file = ?, file_sha256 = ?, width = ?, height = ?, thumb = ? WHERE id = ?')
+            .run(file, item.fileSha, media.width, media.height, media.thumb ? 1 : 0, id);
+        } else {
+          db.prepare(`INSERT INTO attachments (post_id, file, file_mime, file_orig, file_size, file_sha256, file_phash, width, height, thumb, created)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+            .run(id, relative, item.mime, item.uploadFile.originalname.slice(0, 100), item.uploadFile.size, item.fileSha, item.phash, media.width, media.height, media.thumb ? 1 : 0, now);
+        }
+      }
+      storage.writePost(attachments.decorate(db.prepare('SELECT * FROM posts WHERE id = ?').get(id)), normIp(req.ip), settings);
+    } catch (error) {
+      deletePost(id); cleanup(); throw error;
     }
-
-    storage.writePost(db.prepare('SELECT * FROM posts WHERE id = ?').get(id), normIp(req.ip), settings);
 
     if (matches.length) {
       mod.createAlert({ kind: 'keyword', post_id: id, board: board.slug, thread_id: thread?.id ?? id, detail: describe(matches), excerpt, ip: loggedIp });
@@ -608,6 +699,11 @@ export function createServer(opts) {
                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
         .run(id, board.slug, thread?.id ?? id, kind, name, subject, body,
           file, fileOrig, mime, fileSize, req.ip, String(req.get('user-agent') || '').slice(0, 300), now);
+      for (const extra of db.prepare('SELECT * FROM attachments WHERE post_id = ?').all(id)) {
+        db.prepare(`INSERT INTO post_logs (post_id, board, thread_id, kind, name, subject, body, file, file_orig, file_mime, file_size, ip, user_agent, created)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(id, board.slug, thread?.id ?? id, kind, name, subject, body,
+            extra.file, extra.file_orig, extra.file_mime, extra.file_size, req.ip, String(req.get('user-agent') || '').slice(0, 300), now);
+      }
     }
 
     if (thread) {
@@ -628,9 +724,8 @@ export function createServer(opts) {
     if (!p) return fail(req, res, 'Post not found.', 404);
     if (!checkDeletePw(String(req.body.password || ''), p.delete_hash)) return fail(req, res, 'Wrong deletion password.', 403);
     if (req.body.file_only) {
-      if (!p.file) return fail(req, res, 'That post has no file.');
-      db.prepare('UPDATE posts SET file = NULL WHERE id = ?').run(p.id);
-      rmUpload(p.file);
+      if (!attachments.files(p.id).length) return fail(req, res, 'That post has no file.');
+      attachments.clear(p.id);
       return res.redirect(`/${board.slug}/thread/${p.thread_id ?? p.id}#p${p.id}`);
     }
     deletePost(p.id);
@@ -639,7 +734,7 @@ export function createServer(opts) {
 
   // --- ban appeals (one open appeal per ban, only from someone the ban applies to) ---
   app.post('/appeal', (req, res) => {
-    const ban = mod.findBan(req, 'post');
+    const ban = mod.findBan(req, 'post', String(req.body.board || ''));
     if (!ban || ban.id !== Number(req.body.ban_id)) return fail(req, res, 'That ban does not apply to you.', 403);
     if (db.prepare('SELECT 1 FROM appeals WHERE ban_id = ? AND status = \'open\'').get(ban.id)) {
       return fail(req, res, 'You already have an open appeal for this ban.');
@@ -690,7 +785,7 @@ export function createServer(opts) {
 
   app.use((req, res) => fail(req, res, 'Not found.', 404));
   app.use((err, req, res, _next) => {
-    if (req.file) fs.rm(req.file.path, { force: true }, () => {});
+    for (const file of req.files || (req.file ? [req.file] : [])) fs.rm(file.path, { force: true }, () => {});
     if (err instanceof multer.MulterError) {
       return fail(req, res, err.code === 'LIMIT_FILE_SIZE' ? `File too large (max ${maxFileMb} MB).` : err.message);
     }
