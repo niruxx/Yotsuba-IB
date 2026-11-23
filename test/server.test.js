@@ -1,0 +1,336 @@
+// End-to-end tests: start a real server on a random port with a temporary data directory.
+import { test, before, after } from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { createServer } from '../src/server.js';
+import { createAdmin, setSetting } from '../src/db.js';
+
+// 1x1 PNG
+const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64');
+
+let dir, server, base, db, cookie = '', csrf = '';
+
+before(async () => {
+  dir = fs.mkdtempSync(path.join(os.tmpdir(), 'yotsuba-test-'));
+  ({ app: server, db } = createServer({ dataDir: dir }));
+  createAdmin(db, 'owner', 'correct-horse', 'owner');
+  for (const k of ['cooldown_thread_sec', 'cooldown_reply_sec', 'cooldown_upload_sec', 'duplicate_window_min']) setSetting(db, k, 0);
+  await new Promise((resolve) => { server = server.listen(0, '127.0.0.1', resolve); });
+  base = `http://127.0.0.1:${server.address().port}`;
+});
+
+after(async () => {
+  await new Promise((resolve) => server.close(resolve));
+  db.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+const get = (p, opts = {}) => fetch(base + p, { redirect: 'manual', headers: { cookie }, ...opts });
+const form = (obj) => new URLSearchParams(obj);
+async function staffPost(p, fields) {
+  return fetch(base + p, { method: 'POST', redirect: 'manual', headers: { cookie }, body: form({ _csrf: csrf, ...fields }) });
+}
+async function anonPost(slug, fields, file) {
+  const fd = new FormData();
+  for (const [k, v] of Object.entries(fields)) fd.append(k, v);
+  if (file) fd.append('file', new Blob([file], { type: 'image/png' }), 'test.png');
+  return fetch(`${base}/${slug}/post`, { method: 'POST', body: fd, redirect: 'manual' });
+}
+
+test('health check', async () => {
+  const r = await get('/healthz');
+  assert.equal(r.status, 200);
+  assert.equal((await r.json()).status, 'ok');
+});
+
+test('admin login, CSRF and board creation', async () => {
+  const bad = await fetch(`${base}/admin/login`, { method: 'POST', body: form({ username: 'owner', password: 'nope' }) });
+  assert.equal(bad.status, 401);
+
+  const r = await fetch(`${base}/admin/login`, { method: 'POST', redirect: 'manual', body: form({ username: 'owner', password: 'correct-horse' }) });
+  assert.equal(r.status, 302);
+  cookie = r.headers.get('set-cookie').split(';')[0];
+
+  const page = await (await get('/admin/boards')).text();
+  csrf = /name="_csrf" value="([a-f0-9]+)"/.exec(page)[1];
+
+  const noToken = await fetch(`${base}/admin/boards`, { method: 'POST', headers: { cookie }, body: form({ slug: 'x', title: 'X' }) });
+  assert.equal(noToken.status, 403, 'POST without CSRF token must be rejected');
+
+  const created = await staffPost('/admin/boards', { slug: 'g', title: 'Technology', bio: 'tech talk', visible: 'on' });
+  assert.equal(created.status, 302);
+  const home = await (await fetch(base)).text();
+  assert.match(home, /<a href="\/g\/" title="tech talk">Technology<\/a>/);
+});
+
+test('homepage: presets, section order and renamed labels', async () => {
+  const legacy = await (await fetch(base)).text();
+  assert.match(legacy, /class="hp hp-legacy"/);
+  assert.match(legacy, /What is Yotsuba-IB\?/);
+
+  const multipart = (fields) => {
+    const fd = new FormData();
+    fd.append('_csrf', csrf);
+    for (const [k, v] of Object.entries(fields)) fd.append(k, v);
+    return fetch(`${base}/admin/homepage`, { method: 'POST', body: fd, redirect: 'manual', headers: { cookie } });
+  };
+  assert.equal((await multipart({ preset: 'standard' })).status, 302);
+  const standard = await (await fetch(base)).text();
+  assert.match(standard, /class="hp hp-standard"/);
+  assert.match(standard, /hp-board-table/);
+
+  // Rename labels, retitle and reorder: stats first, intro hidden.
+  const r = await multipart({
+    layout: 'standard', enabled_stats: 'on', order_stats: '1', title_stats: 'Numbers',
+    enabled_boards: 'on', order_boards: '2', label_col_pph: 'Posts/hr', label_nav_search: 'find', label_footer: 'My footer',
+  });
+  assert.equal(r.status, 302);
+  const custom = await (await fetch(base)).text();
+  assert.match(custom, /Posts\/hr/);
+  assert.match(custom, />find</);
+  assert.match(custom, /My footer/);
+  assert.doesNotMatch(custom, /What is Yotsuba-IB/);
+  assert.ok(custom.indexOf('Numbers') < custom.indexOf('hp-board-table'), 'stats should come before the board list');
+
+  // Without a CSRF token the change is refused.
+  const fd = new FormData(); fd.append('preset', 'legacy');
+  assert.equal((await fetch(`${base}/admin/homepage`, { method: 'POST', body: fd, headers: { cookie } })).status, 403);
+});
+
+test('threads need a file; posting works; replies render with backlinks', async () => {
+  const noFile = await anonPost('g', { subject: 'hi', body: 'no file' });
+  assert.equal(noFile.status, 400);
+
+  const t = await anonPost('g', { subject: 'First thread', body: 'hello world' }, PNG);
+  assert.equal(t.status, 302);
+  const threadUrl = t.headers.get('location');
+  assert.match(threadUrl, /^\/g\/thread\/\d+$/);
+  const opId = Number(threadUrl.split('/').pop());
+
+  const r = await anonPost('g', { thread: String(opId), body: `>>${opId}\n>implying` });
+  assert.equal(r.status, 302);
+
+  const html = await (await fetch(base + threadUrl)).text();
+  assert.match(html, /First thread/);
+  assert.match(html, /class="greentext">&gt;implying/);
+  assert.match(html, /class="backlinks"/);
+});
+
+test('image processing: dimensions, thumbnail, metadata-free storage (needs sharp)', async (t) => {
+  try { await import('sharp'); } catch { return t.skip('sharp not installed'); }
+  const r = await anonPost('g', { subject: 'sharp test', body: 'img' }, PNG);
+  const id = Number(r.headers.get('location').split('/').pop());
+  const row = db.prepare('SELECT width, height, thumb FROM posts WHERE id = ?').get(id);
+  assert.equal(row.width, 1);
+  assert.equal(row.height, 1);
+  assert.equal(row.thumb, 1, 'thumbnail should be generated');
+  const thumb = await fetch(`${base}/media/thumb/${id}.jpg`);
+  assert.equal(thumb.status, 200);
+  assert.equal(thumb.headers.get('content-type'), 'image/jpeg');
+  const full = await fetch(`${base}/media/${id}.png`);
+  assert.equal(full.status, 200);
+  const api = await (await fetch(`${base}/api/g/threads/${id}.json`)).json();
+  assert.equal(api.posts[0].w, 1);
+});
+
+test('tripcodes and sage', async () => {
+  const t = await anonPost('g', { subject: 'trip test', body: 'x', name: 'Bob#secret' }, PNG);
+  const id = Number(t.headers.get('location').split('/').pop());
+  const html = await (await fetch(`${base}/g/thread/${id}`)).text();
+  assert.match(html, /Bob <span class="trip">!/);
+  assert.doesNotMatch(html, /secret/);
+});
+
+test('JSON API, catalog, search, RSS', async () => {
+  const boards = await (await fetch(`${base}/api/boards.json`)).json();
+  assert.equal(boards.boards[0].board, 'g');
+  const catalog = await (await fetch(`${base}/api/g/catalog.json`)).json();
+  assert.ok(catalog[0].threads.length >= 1);
+  const tid = catalog[0].threads.at(-1).no;
+  const thread = await (await fetch(`${base}/api/g/threads/${tid}.json`)).json();
+  assert.equal(thread.posts[0].no, tid);
+  assert.equal(thread.posts[0].ip, undefined, 'API must not leak IPs');
+
+  assert.equal((await fetch(`${base}/g/catalog`)).status, 200);
+  assert.match(await (await fetch(`${base}/search?q=hello`)).text(), /First thread|hello world/);
+  assert.match(await (await fetch(`${base}/g/rss.xml`)).text(), /<rss version="2.0">/);
+});
+
+test('keyword block rules reject posts', async () => {
+  await staffPost('/admin/filters', { pattern: 'buy cheap pills', action: 'block' });
+  const r = await anonPost('g', { thread: '1', body: 'please BUY   cheap pills now' });
+  assert.equal(r.status, 403);
+  const alerts = await (await get('/admin/alerts')).text();
+  assert.match(alerts, /Blocked post/);
+});
+
+test('hidden boards are invisible to visitors', async () => {
+  await staffPost('/admin/boards', { slug: 'sec', title: 'Secret' });
+  assert.equal((await fetch(`${base}/sec/`)).status, 404);
+  assert.equal((await get('/sec/')).status, 200, 'staff can still see it');
+});
+
+test('bans block posting', async () => {
+  await staffPost('/admin/bans', { kind: 'ip', value: '127.0.0.1', scope: 'post', duration: '1h', reason: 'testing' });
+  const r = await anonPost('g', { thread: '1', body: 'am I banned?' });
+  assert.equal(r.status, 403);
+  assert.match(await r.text(), /You are banned/);
+});
+
+
+test('NSFW ratings, customized warnings and per-board confirmation', async () => {
+  const created = await staffPost('/admin/boards', { slug: 'adult', title: 'Adult', visible: 'on', nsfw: '1' });
+  assert.equal(created.status, 302);
+  assert.equal(db.prepare('SELECT nsfw FROM boards WHERE slug = ?').get('adult').nsfw, 1);
+  const other = await staffPost('/admin/boards', { slug: 'adult2', title: 'Other', visible: 'on', nsfw: 'on' });
+  assert.equal(other.status, 302);
+  assert.equal(db.prepare('SELECT nsfw FROM boards WHERE slug = ?').get('adult2').nsfw, 1);
+  const saved = await staffPost('/admin/settings', {
+    logging_enabled: 'on', nsfw_warning_title: 'Sensitive content', nsfw_warning_text: 'Think before entering <script>alert(1)</script>',
+  });
+  assert.equal(saved.status, 302);
+  assert.equal(db.prepare("SELECT value FROM settings WHERE key = 'nsfw_warning_title'").get().value, 'Sensitive content');
+  for (const route of ['/adult/', '/adult/catalog', '/adult/archive', '/adult/thread/999']) {
+    const response = await fetch(base + route);
+    const html = await response.text();
+    assert.match(html, /Sensitive content/);
+    assert.match(html, /Think before entering &lt;script&gt;/);
+    assert.match(html, /Continue to board/);
+    assert.match(html, /role="dialog" aria-modal="true"/);
+    assert.match(html, /Adults 18 and older only/);
+    assert.match(html, /name="age_confirmed" value="1" required/);
+    assert.doesNotMatch(html, /class="postform"/);
+    assert.doesNotMatch(html, /<script>alert/);
+    assert.equal(response.headers.get('cache-control'), 'private, no-store');
+  }
+  assert.doesNotMatch(await (await fetch(base + '/g/')).text(), /Continue to board/);
+  const spanishWarning = await (await fetch(base + '/adult/', { headers: { cookie: 'language=es' } })).text();
+  assert.match(spanishWarning, /Solo para mayores de 18/);
+  assert.match(spanishWarning, /name="age_confirmed"/);
+  const unconfirmed = await fetch(base + '/adult/nsfw/accept', { method: 'POST', redirect: 'manual', body: form({ destination: '/adult/' }) });
+  assert.equal(unconfirmed.status, 403);
+  assert.equal(unconfirmed.headers.get('set-cookie'), null);
+  const accepted = await fetch(base + '/adult/nsfw/accept', {
+    method: 'POST', redirect: 'manual', body: form({ destination: '/adult/catalog?page=1', age_confirmed: '1' }),
+  });
+  assert.equal(accepted.status, 303);
+  assert.equal(accepted.headers.get('location'), '/adult/catalog?page=1');
+  const acceptance = accepted.headers.get('set-cookie').split(';')[0];
+  for (const route of ['/adult/', '/adult', '/adult/catalog']) {
+    assert.doesNotMatch(await (await fetch(base + route, { headers: { cookie: acceptance } })).text(), /Continue to board/);
+  }
+  assert.match(await (await fetch(base + '/adult2/', { headers: { cookie: acceptance } })).text(), /Continue to board/);
+  const external = await fetch(base + '/adult/nsfw/accept', {
+    method: 'POST', redirect: 'manual', body: form({ destination: '//example.com/', age_confirmed: '1' }),
+  });
+  assert.equal(external.headers.get('location'), '/adult/');
+  await staffPost('/admin/boards/adult', { action: 'save', title: 'Adult', visible: 'on', nsfw: '0' });
+  assert.equal(db.prepare('SELECT nsfw FROM boards WHERE slug = ?').get('adult').nsfw, 0);
+  assert.doesNotMatch(await (await fetch(base + '/adult/')).text(), /Continue to board/);
+});
+
+
+test('private board files, log relocation, logging warning and templates', async () => {
+  const post = db.prepare('SELECT * FROM posts WHERE board = ? AND file IS NOT NULL LIMIT 1').get('g');
+  const threadDir = path.join(dir, 'boards', 'g', 'threads', String(post.thread_id || post.id));
+  assert.ok(fs.existsSync(path.join(threadDir, `${post.id}.json`)));
+  const log = JSON.parse(fs.readFileSync(path.join(threadDir, `${post.id}.json.log.out`), 'utf8'));
+  assert.equal(log.name, post.name);
+  assert.ok(log.ip.includes('127.0.0.1'));
+  assert.equal((await get(`/media/${post.id}.png`)).status, 200);
+  assert.equal((await get(`/boards/g/threads/${post.id}/${post.id}.json.log.out`)).status, 404);
+  const moved = await staffPost('/admin/settings', { logging_enabled: 'on', log_directory: 'private-logs', move_logs: 'on' });
+  assert.equal(moved.status, 302);
+  assert.ok(fs.existsSync(path.join(dir, 'private-logs', 'g', 'threads', String(post.thread_id || post.id), `${post.id}.json.log.out`)));
+  assert.ok(!fs.existsSync(path.join(threadDir, `${post.id}.json.log.out`)));
+  assert.equal((await staffPost('/admin/settings', {})).status, 400);
+  assert.equal((await staffPost('/admin/settings', { confirm_disable_logging: '1', log_directory: 'private-logs' })).status, 302);
+  for (const ban of db.prepare('SELECT id FROM bans WHERE lifted = 0').all()) await staffPost(`/admin/bans/${ban.id}/lift`, {});
+  setSetting(db, 'cooldown_reply_sec', '0');
+  const response = await anonPost('g', { thread: String(post.thread_id || post.id), body: 'Logging disabled verification', name: 'Tester' });
+  assert.equal(response.status, 302);
+  const latest = db.prepare('SELECT * FROM posts ORDER BY id DESC LIMIT 1').get();
+  assert.ok(fs.existsSync(path.join(threadDir, `${latest.id}.json`)));
+  assert.ok(!fs.existsSync(path.join(dir, 'private-logs', 'g', 'threads', String(post.thread_id || post.id), `${latest.id}.json.log.out`)));
+  const homepage = db.prepare("SELECT value FROM settings WHERE key = 'homepage'").get().value;
+  assert.equal((await staffPost('/admin/templates', { template: '4chan', mode: 'merge' })).status, 302);
+  assert.equal(db.prepare('SELECT bio FROM boards WHERE slug = ?').get('g').bio, 'tech talk');
+  assert.equal(db.prepare("SELECT value FROM settings WHERE key = 'homepage'").get().value, homepage);
+  assert.ok(fs.existsSync(path.join(dir, 'boards', 'sci')));
+  assert.equal((await staffPost('/admin/templates', { template: '8kun', mode: 'replace' })).status, 400);
+  assert.ok(db.prepare('SELECT id FROM posts WHERE id = ?').get(post.id));
+  assert.equal((await staffPost('/admin/templates', { template: '8kun', mode: 'replace', confirm_replace: 'REPLACE' })).status, 302);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM posts').get().n, 0);
+  assert.equal(db.prepare('SELECT slug FROM boards WHERE slug = ?').get('g'), undefined);
+  assert.ok(db.prepare('SELECT slug FROM boards WHERE slug = ?').get('tech'));
+  assert.ok(db.prepare('SELECT id FROM admins WHERE role = ?').get('owner'));
+});
+
+
+test('adult presets for both styles create NSFW boards with entry warnings', async () => {
+  const { BOARD_TEMPLATES } = await import('../src/templates.js');
+  for (const key of ['4chan-adult', '8kun-adult']) {
+    assert.equal((await staffPost('/admin/templates', { template: key, mode: 'merge' })).status, 302);
+    for (const [slug] of BOARD_TEMPLATES[key].boards) {
+      assert.equal(db.prepare('SELECT nsfw FROM boards WHERE slug = ?').get(slug).nsfw, 1);
+      assert.ok(fs.existsSync(path.join(dir, 'boards', slug)));
+      const page = await (await fetch(`${base}/${slug}/`)).text();
+      assert.match(page, /NSFW warning/);
+      assert.match(page, /Continue to board/);
+    }
+  }
+  assert.equal(db.prepare('SELECT nsfw FROM boards WHERE slug = ?').get('tech').nsfw, 0);
+  assert.equal((await staffPost('/admin/templates', { template: '8kun-adult', mode: 'replace', confirm_replace: 'REPLACE' })).status, 302);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM boards WHERE nsfw = 0').get().n, 0);
+  assert.equal(JSON.parse(db.prepare("SELECT value FROM settings WHERE key = 'homepage'").get().value).layout, 'standard');
+});
+
+test('security: UTF-8 CSRF, board scope, scoped alerts and private caching', async () => {
+  const malformed = await staffPost('/admin/boards', { _csrf: '\u00e9'.repeat(csrf.length), slug: 'badcsrf', title: 'Bad' });
+  assert.equal(malformed.status, 403);
+  const adminPage = await get('/admin/boards');
+  assert.equal(adminPage.headers.get('cache-control'), 'private, no-store');
+  await staffPost('/admin/boards', { slug: 'scopea', title: 'Allowed board', visible: 'on' });
+  await staffPost('/admin/boards', { slug: 'scopeb', title: 'Other board', visible: 'on' });
+  await staffPost('/admin/filters', { pattern: 'scope-secret-token', action: 'block' });
+  db.prepare("UPDATE boards SET text_only = 1 WHERE slug IN ('scopea', 'scopeb')").run();
+  createAdmin(db, 'scoped', 'test-password', 'staff', ['manage_boards', 'view_alerts']);
+  db.prepare("UPDATE admins SET boards = 'scopea' WHERE username = 'scoped'").run();
+  const ownerCookie = cookie, ownerCsrf = csrf;
+  try {
+    const login = await fetch(base + '/admin/login', { method: 'POST', redirect: 'manual', body: form({ username: 'scoped', password: 'test-password' }) });
+    cookie = login.headers.get('set-cookie').split(';')[0];
+    const page = await (await get('/admin/boards')).text();
+    csrf = /name="_csrf" value="([a-f0-9]+)"/.exec(page)[1];
+    assert.match(page, /Allowed board/);
+    assert.doesNotMatch(page, /action="\/admin\/boards\/scopeb"/);
+    assert.equal((await staffPost('/admin/boards/scopeb', { title: 'Changed', visible: 'on' })).status, 403);
+    assert.equal((await staffPost('/admin/boards/scopeb', { action: 'delete' })).status, 403);
+    assert.equal((await staffPost('/admin/boards', { slug: 'outsider', title: 'Outside' })).status, 403);
+    assert.equal((await staffPost('/admin/boards/scopea', { title: 'Updated', visible: 'on', text_only: 'on' })).status, 302);
+    const controller = new AbortController();
+    const stream = await get('/admin/events', { signal: controller.signal });
+    const reader = stream.body.getReader();
+    try {
+      await reader.read(); // initial connection comment
+      assert.equal((await anonPost('scopeb', { body: 'scope-secret-token outside' })).status, 403);
+      assert.equal((await anonPost('scopea', { body: 'scope-secret-token allowed' })).status, 403);
+      const event = await Promise.race([
+        reader.read(),
+        new Promise((_, reject) => { const timer = setTimeout(() => reject(new Error('Missing scoped alert')), 3000); timer.unref(); }),
+      ]);
+      const payload = new TextDecoder().decode(event.value);
+      assert.match(payload, /"board":"scopea"/);
+      assert.doesNotMatch(payload, /scopeb|outside/);
+    } finally { controller.abort(); await reader.cancel().catch(() => {}); }
+    const insert = db.prepare("INSERT INTO alerts (kind, board, detail, created) VALUES ('report', ?, 'Scope test', ?)");
+    const own = Number(insert.run('scopea', Date.now()).lastInsertRowid);
+    const other = Number(insert.run('scopeb', Date.now()).lastInsertRowid);
+    assert.equal((await staffPost(`/admin/alerts/${other}`, { action: 'resolve' })).status, 403);
+    assert.equal((await staffPost('/admin/alerts-resolve-all', {})).status, 302);
+    assert.equal(db.prepare('SELECT status FROM alerts WHERE id = ?').get(own).status, 'resolved');
+    assert.equal(db.prepare('SELECT status FROM alerts WHERE id = ?').get(other).status, 'open');
+  } finally { cookie = ownerCookie; csrf = ownerCsrf; }
+});
